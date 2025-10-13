@@ -1,0 +1,65 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "linden",
+  "name": "datafruit",
+  "colors": {
+    "primary": "#E94F57",
+    "light": "#FDB5B5",
+    "dark": "#B22B3A"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["index", "quickstart"]
+          },
+          {
+            "group": "Jobs",
+            "pages": [
+              "jobs/sql-jobs",
+              "jobs/py-jobs"
+            ]
+          },
+          {
+            "group": "Roadmap and Changelog",
+            "pages": ["roadmap-changelog/roadmap",
+             "roadmap-changelog/changelog"
+            ]
+          }
+        ]
+      }
+    ],
+    "global": {
+      "anchors": [
+        {
+          "anchor": "Community",
+          "href": "https://discord.gg/NuZfcJsdAd",
+          "icon": "discord"
+        }
+      ]
+    }
+  },
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Support",
+        "href": "mailto:founders@datafruit.dev"
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "x": "https://x.com/chendotnet",
+      "github": "https://github.com/datafruit-dev",
+      "linkedin": "https://www.linkedin.com/company/datafruitdev"
+    }
+  }
+}

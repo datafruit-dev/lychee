@@ -1,0 +1,46 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# Next.js
+web/node_modules
+web/.pnp
+web/.pnp.*
+web/.yarn/*
+!web/.yarn/patches
+!web/.yarn/plugins
+!web/.yarn/releases
+!web/.yarn/versions
+web/coverage
+web/.next/
+web/out/
+web/build
+web/*.tsbuildinfo
+web/next-env.d.ts
+
+# Dependencies
+node_modules/
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Environment variables
+.env*
+
+# Production
+/build
+/dist
+
+# Vercel
+.vercel
+
+# macOS
+.DS_Store
+
+# Misc
+*.pem
