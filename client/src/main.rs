@@ -290,8 +290,18 @@ async fn run_client(debug: bool) {
 
     // Handle incoming messages
     while let Some(Ok(WsMessage::Text(text))) = read.next().await {
+        if debug {
+            println!("🔵 CLIENT: Received message from relay: {}", text);
+        }
         if let Ok(msg) = serde_json::from_str::<Message>(&text) {
+            if debug {
+                println!("🔵 CLIENT: Parsed message: {:?}", msg);
+            }
             handle_message(msg, tx.clone(), &repo_path, &state).await;
+        } else {
+            if debug {
+                println!("❌ CLIENT: Failed to parse message: {}", text);
+            }
         }
     }
 
@@ -317,11 +327,17 @@ async fn handle_message(
 ) {
     match msg {
         Message::ListSessions { .. } => {
+            if state.debug {
+                println!("🔵 CLIENT: Handling ListSessions request");
+            }
             let sessions = list_sessions(repo_path).await;
             let response = Message::SessionsList {
                 repo_path: repo_path.to_string(),
-                sessions,
+                sessions: sessions.clone(),
             };
+            if state.debug {
+                println!("🔵 CLIENT: Sending sessions list: {} sessions", sessions.len());
+            }
             let _ = tx.send(serde_json::to_string(&response).unwrap());
         }
 
@@ -336,20 +352,34 @@ async fn handle_message(
         }
 
         Message::LoadSession { lychee_id, .. } => {
+            if state.debug {
+                println!("🔵 CLIENT: Loading session history for: {}", lychee_id);
+            }
             let messages = load_session_history(repo_path, &lychee_id, state.debug).await;
             let response = Message::SessionHistory {
                 repo_path: repo_path.to_string(),
-                lychee_id,
-                messages,
+                lychee_id: lychee_id.clone(),
+                messages: messages.clone(),
             };
+            if state.debug {
+                println!("🔵 CLIENT: Sending session history for {}: {} messages", lychee_id, messages.as_array().map_or(0, |a| a.len()));
+            }
             let _ = tx.send(serde_json::to_string(&response).unwrap());
         }
 
         Message::SendMessage { lychee_id, content, .. } => {
+            if state.debug {
+                println!("🔵 CLIENT: Received SendMessage for session: {}", lychee_id);
+                println!("🔵 CLIENT: Message content: {}", content);
+            }
+
             // Check if already running
             {
                 let processes = state.active_processes.read().await;
                 if processes.contains_key(&lychee_id) {
+                    if state.debug {
+                        println!("❌ CLIENT: Claude already running for session {}", lychee_id);
+                    }
                     let error = Message::Error {
                         repo_path: Some(repo_path.to_string()),
                         message: format!("Claude already running for session {}", lychee_id),
@@ -362,6 +392,9 @@ async fn handle_message(
             // Update last_active immediately when message is sent
             let lychee_dir = PathBuf::from(repo_path).join(".lychee");
             let session_info_path = lychee_dir.join(".session-info.json");
+            if state.debug {
+                println!("🔵 CLIENT: Updating last_active for session: {}", lychee_id);
+            }
             if let Some(mut info) = std::fs::read_to_string(&session_info_path)
                 .ok()
                 .and_then(|s| serde_json::from_str::<SessionInfoFile>(&s).ok())
@@ -379,6 +412,9 @@ async fn handle_message(
                         repo_path: repo_path.to_string(),
                         sessions,
                     };
+                    if state.debug {
+                        println!("🔵 CLIENT: Sending updated sessions list to frontend");
+                    }
                     let _ = tx.send(serde_json::to_string(&update_msg).unwrap());
                 }
             }
@@ -389,6 +425,10 @@ async fn handle_message(
             let lychee_id_clone = lychee_id.clone();
             let content_clone = content.clone();
             let state_clone = state.clone();
+
+            if state.debug {
+                println!("🔵 CLIENT: Spawning Claude task for session: {}", lychee_id);
+            }
 
             tokio::spawn(async move {
                 spawn_claude(tx_clone, &repo_path_clone, &lychee_id_clone, &content_clone, &state_clone).await;
@@ -651,14 +691,21 @@ async fn spawn_claude(
     cmd.arg(content);
     cmd.arg("--output-format");
     cmd.arg("stream-json");
+    cmd.arg("--verbose");
 
     if state.debug {
         println!("🚀 Spawning Claude for session {}", lychee_id);
         if let Some(ref id) = claude_session_id {
             println!("   Resuming Claude session: {}", id);
         } else {
-            println!("   Starting new Claude conversation");
+            println!("   Starting new Claude conversation (no existing session ID)");
         }
+        println!("   Full command: claude {}",
+            if claude_session_id.is_some() {
+                format!("--resume {} -p {} --output-format stream-json --verbose", claude_session_id.as_ref().unwrap(), content)
+            } else {
+                format!("-p {} --output-format stream-json --verbose", content)
+            });
     }
 
     // Spawn process
@@ -687,6 +734,9 @@ async fn spawn_claude(
     };
     let mut reader = BufReader::new(stdout).lines();
 
+    // Also capture stderr for debugging (but don't store child yet)
+    let _stderr = child.stderr.take();
+
     // Store process
     {
         let mut processes = state.active_processes.write().await;
@@ -697,10 +747,18 @@ async fn spawn_claude(
     let repo_path_str = repo_path.to_string();
     let mut new_claude_id = None;
 
+    if state.debug {
+        println!("🔵 CLIENT: Starting to read Claude output for session: {}", lychee_id_str);
+    }
+
     // Stream output (not spawned, handle inline)
     while let Ok(Some(line)) = reader.next_line().await {
         if line.trim().is_empty() {
             continue;
+        }
+
+        if state.debug {
+            println!("🔵 CLIENT: Got Claude output line: {}", line);
         }
 
         if let Ok(data) = serde_json::from_str::<Value>(&line) {
@@ -719,13 +777,24 @@ async fn spawn_claude(
             let msg = Message::ClaudeStream {
                 repo_path: repo_path_str.clone(),
                 lychee_id: lychee_id_str.clone(),
-                data,
+                data: data.clone(),
             };
-            let _ = tx.send(serde_json::to_string(&msg).unwrap());
+            let msg_json = serde_json::to_string(&msg).unwrap();
+            if state.debug {
+                println!("🔵 CLIENT: Sending ClaudeStream message to relay: {}", msg_json);
+            }
+            let _ = tx.send(msg_json);
+        } else {
+            if state.debug {
+                println!("❌ CLIENT: Failed to parse Claude output as JSON: {}", line);
+            }
         }
     }
 
     // Update session info when Claude finishes
+    if state.debug {
+        println!("🔵 CLIENT: Claude process finished for session: {}", lychee_id_str);
+    }
     let mut sessions_updated = false;
     if let Some(mut info) = std::fs::read_to_string(&session_info_path)
         .ok()
@@ -734,7 +803,13 @@ async fn spawn_claude(
         if let Some(metadata) = info.sessions.get_mut(&lychee_id_str) {
             // Update Claude session ID if we got a new one
             if let Some(claude_id) = new_claude_id {
+                if state.debug {
+                    println!("🔵 CLIENT: Updating Claude session ID: {}", claude_id);
+                }
                 metadata.claude_session_id = Some(claude_id);
+            } else if state.debug {
+                println!("⚠️ CLIENT: No Claude session ID was captured during this run!");
+                println!("⚠️ CLIENT: Current metadata claude_session_id: {:?}", metadata.claude_session_id);
             }
             // Update last_active when response completes
             metadata.last_active = chrono::Utc::now().to_rfc3339();
@@ -749,6 +824,9 @@ async fn spawn_claude(
 
     // Send updated sessions list to frontend
     if sessions_updated {
+        if state.debug {
+            println!("🔵 CLIENT: Sending final updated sessions list to frontend");
+        }
         let sessions = list_sessions(&repo_path_str).await;
         let update_msg = Message::SessionsList {
             repo_path: repo_path_str.clone(),
