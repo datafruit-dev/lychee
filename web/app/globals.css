@@ -69,3 +69,19 @@ body {
 .awaiting-border {
   animation: border-glow 3s ease-in-out infinite;
 }
+
+@keyframes push-down {
+  0% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(5px);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+.animate-push-down {
+  animation: push-down 0.4s ease-out;
+}

@@ -19,6 +19,7 @@ interface SidebarProps {
   repos: Repo[];
   activeRepoPath: string | null;
   currentSessionId: string | null;
+  creatingSessionForRepo?: string | null;
   onSelectSession: (repoPath: string, sessionId: string) => void;
   onNewSession: (repoPath: string) => void;
 }
@@ -44,6 +45,7 @@ export default function Sidebar({
   repos,
   activeRepoPath,
   currentSessionId,
+  creatingSessionForRepo,
   onSelectSession,
   onNewSession,
 }: SidebarProps) {
@@ -190,13 +192,21 @@ export default function Sidebar({
 
                   {/* Sessions */}
                   {isExpanded && (
-                    <div className="ml-5 mt-0.5 space-y-0.5">
+                    <div className="ml-5 mt-0.5 space-y-0.5 overflow-hidden">
                       {/* New Branch Button */}
                       <button
                         onClick={() => onNewSession(repo.path)}
-                        className="w-full group flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors text-left hover:bg-gray-100 text-gray-600 hover:text-gray-900"
+                        disabled={creatingSessionForRepo === repo.path}
+                        className="w-full group flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors text-left hover:bg-gray-100 text-gray-600 hover:text-gray-900 disabled:opacity-50"
                       >
-                        <Plus className="w-3 h-3 flex-shrink-0" strokeWidth={2} />
+                        {creatingSessionForRepo === repo.path ? (
+                          <svg className="animate-spin w-3 h-3 flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                        ) : (
+                          <Plus className="w-3 h-3 flex-shrink-0" strokeWidth={2} />
+                        )}
                         <span className="text-xs">New Branch</span>
                       </button>
 
@@ -206,14 +216,18 @@ export default function Sidebar({
                           No branches yet
                         </div>
                       ) : (
-                        repo.sessions.map((session) => {
+                        [...repo.sessions]
+                          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                          .map((session) => {
                           const isActiveSession = session.id === currentSessionId && repo.path === activeRepoPath;
 
                           return (
                             <button
                               key={session.id}
                               onClick={() => onSelectSession(repo.path, session.id)}
-                              className={`w-full group flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors text-left ${
+                              className={`w-full group flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer transition-all duration-300 ease-out text-left ${
+                                creatingSessionForRepo === repo.path ? 'animate-push-down' : ''
+                              } ${
                                 isActiveSession
                                   ? "bg-gray-900/10 text-gray-900"
                                   : "hover:bg-gray-100 text-gray-700 hover:text-gray-900"

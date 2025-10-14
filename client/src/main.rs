@@ -250,7 +250,19 @@ async fn run_client(debug: bool) {
                                 println!("📥 Load session: {} from {}", session_id, repo_path);
                             }
 
-                            let messages = load_session_history(&repo_path, &session_id, debug);
+                            let (messages, error) = load_session_history(&repo_path, &session_id, debug);
+
+                            // Send error message if loading failed
+                            if let Some(error_msg) = error {
+                                let error_response = serde_json::json!({
+                                    "type": "error",
+                                    "message": error_msg
+                                });
+                                let _ = write
+                                    .send(Message::Text(error_response.to_string()))
+                                    .await;
+                            }
+
                             let response = WsMessage::SessionHistory {
                                 session_id,
                                 messages,
@@ -515,8 +527,18 @@ async fn spawn_claude(
                 // Update state
                 if let Some(stream_type) = json_value.get("type").and_then(|v| v.as_str()) {
                     if stream_type == "result" {
-                        if let Some(sid) = json_value.get("session_id").and_then(|v| v.as_str()) {
-                            state.write().await.session_id = Some(sid.to_string());
+                        if let Some(claude_sid) = json_value.get("session_id").and_then(|v| v.as_str()) {
+                            state.write().await.session_id = Some(claude_sid.to_string());
+
+                            // Store the Claude session ID mapping if we have a Lychee session
+                            if let Some(lychee_sid) = session_id {
+                                let mapping_file = format!("{}/.lychee/{}/.claude_session_id", working_dir, lychee_sid);
+                                if let Err(e) = std::fs::write(&mapping_file, claude_sid) {
+                                    if debug {
+                                        eprintln!("Failed to save Claude session ID mapping: {}", e);
+                                    }
+                                }
+                            }
                         }
                         state.write().await.messages_processed += 1;
                         state.write().await.is_claude_running = false;
@@ -573,16 +595,33 @@ async fn spawn_claude(
     }
 }
 
-fn load_session_history(repo_path: &str, session_id: &str, debug: bool) -> Value {
-    // Convert repo path to Claude's format: /Users/nick/project -> -Users-nick-project
-    let claude_dir = repo_path.replace("/", "-");
+fn load_session_history(repo_path: &str, session_id: &str, debug: bool) -> (Value, Option<String>) {
+    // First, read the Claude session ID mapping
+    let mapping_file = format!("{}/.lychee/{}/.claude_session_id", repo_path, session_id);
+    let claude_session_id = match std::fs::read_to_string(&mapping_file) {
+        Ok(id) => id.trim().to_string(),
+        Err(_) => {
+            if debug {
+                println!("No Claude session ID mapping found for {}", session_id);
+            }
+            // This is expected for new sessions that haven't had any messages yet
+            return (serde_json::json!([]), None);
+        }
+    };
 
-    // Build file path
+    // Claude saves sessions based on the worktree path, not the main repo path
+    // Convert worktree path to Claude's format: /path/to/repo/.lychee/session-abc -> -path-to-repo--lychee-session-abc
+    let worktree_path = format!("{}/.lychee/{}", repo_path, session_id);
+    // Replace / with - and also handle the dot in .lychee
+    let claude_dir = worktree_path.replace("/", "-").replace("-.lychee", "--lychee");
+
+    // Build file path using the actual Claude session ID
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let file_path = format!("{}/.claude/projects/{}/{}.jsonl", home, claude_dir, session_id);
+    let file_path = format!("{}/.claude/projects/{}/{}.jsonl", home, claude_dir, claude_session_id);
 
     if debug {
-        println!("Reading session file: {}", file_path);
+        println!("Reading session file: {} (Claude ID: {})", file_path, claude_session_id);
+        println!("Using Claude project dir: {}", claude_dir);
     }
 
     // Read file
@@ -592,7 +631,12 @@ fn load_session_history(repo_path: &str, session_id: &str, debug: bool) -> Value
             if debug {
                 eprintln!("Failed to read session file: {}", e);
             }
-            return serde_json::json!([]);
+            // Check if it's just that Claude hasn't saved yet
+            if e.kind() == std::io::ErrorKind::NotFound {
+                // This is normal right after the first message - Claude saves asynchronously
+                return (serde_json::json!([]), None); // Don't show error for this normal case
+            }
+            return (serde_json::json!([]), Some(format!("Failed to load session history: {}", e)));
         }
     };
 
@@ -658,7 +702,7 @@ fn load_session_history(repo_path: &str, session_id: &str, debug: bool) -> Value
         }
     }
 
-    serde_json::json!(messages)
+    (serde_json::json!(messages), None)
 }
 
 fn scan_worktrees(working_dir: &str, debug: bool) -> Vec<SessionInfo> {

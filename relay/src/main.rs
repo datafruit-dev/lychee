@@ -228,6 +228,7 @@ async fn handle_client(
             if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
                 match ws_msg {
                     WsMessage::SessionCreated { repo_path, session } => {
+                        println!("📦 Received SessionCreated for {} - {}", repo_path, session.id);
                         // Update stored sessions
                         {
                             let mut clients_guard = clients.write().await;
@@ -236,7 +237,13 @@ async fn handle_client(
                             }
                         }
 
-                        // Broadcast session update
+                        // Forward the SessionCreated message as-is first
+                        println!("📡 Broadcasting SessionCreated to browsers");
+                        if browser_tx.send(text.clone()).is_err() {
+                            println!("⚠️  Failed to broadcast SessionCreated - no browsers listening?");
+                        }
+
+                        // Then broadcast session update for other browsers
                         let clients_guard = clients.read().await;
                         if let Some(client_info) = clients_guard.get(&repo_path) {
                             let update_msg = WsMessage::SessionsUpdated {

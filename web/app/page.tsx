@@ -19,6 +19,8 @@ export default function Home() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [repos, setRepos] = useState<Repo[]>([]);
   const [activeRepoPath, setActiveRepoPath] = useState<string | null>(null);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [creatingSessionForRepo, setCreatingSessionForRepo] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -43,6 +45,36 @@ export default function Home() {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
+        console.log("WebSocket message received:", message.type, message);
+
+        // Handle session_created FIRST before any other message type
+        if (message.type === "session_created") {
+          console.log("🎯 SESSION CREATED RECEIVED:", message);
+          console.log("  Session ID:", message.session?.id);
+          console.log("  Repo Path:", message.repo_path);
+
+          // Just add the session to the list, don't switch to it
+          if (message.session && message.session.id) {
+            setIsCreatingSession(false);
+            setCreatingSessionForRepo(null);
+
+            // Update repos with new session (add to beginning for newest first)
+            setRepos((prev) => {
+              const updated = prev.map((r) =>
+                r.path === message.repo_path
+                  ? { ...r, sessions: [message.session, ...r.sessions] }
+                  : r
+              );
+              console.log("Updated repos:", updated);
+              return updated;
+            });
+
+            console.log("✅ Session created and added to list");
+          } else {
+            console.error("❌ Invalid session_created message - missing session or id");
+          }
+          return; // Stop processing other handlers
+        }
 
         if (message.type === "repo_added") {
           console.log("Repo added:", message.repo);
@@ -57,7 +89,19 @@ export default function Home() {
             setSessionId(null);
           }
         } else if (message.type === "sessions_updated") {
-          console.log("Sessions updated for:", message.repo_path);
+          console.log("📋 SESSIONS_UPDATED received:", message);
+
+          // Check if this is for a repo we're creating a session for
+          // We need to access the state value directly here
+          setCreatingSessionForRepo((currentRepo) => {
+            if (currentRepo === message.repo_path) {
+              console.log("  Session creation complete for repo:", currentRepo);
+              setIsCreatingSession(false);
+              return null;
+            }
+            return currentRepo;
+          });
+
           setRepos((prev) =>
             prev.map((r) =>
               r.path === message.repo_path
@@ -75,6 +119,8 @@ export default function Home() {
             ...prev,
             { role: "system", content: message.message },
           ]);
+        } else {
+          console.warn("Unknown message type:", message.type, message);
         }
       } catch (err) {
         console.error("Failed to parse message:", err);
@@ -95,7 +141,8 @@ export default function Home() {
     return () => {
       ws.close();
     };
-  }, [activeRepoPath]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleClaudeStream = (stream: Record<string, any>) => {
@@ -140,7 +187,7 @@ export default function Home() {
 
     } else if (streamType === "result") {
       // Final stats message
-      setSessionId(stream.session_id);
+      // Don't overwrite the Lychee session ID with Claude's session ID
       setIsStreaming(false);
       currentAssistantContent.current = "";
 
@@ -208,6 +255,7 @@ export default function Home() {
 
     setActiveRepoPath(repoPath);
     setSessionId(sessionId);
+    setIsCreatingSession(false);
 
     // Request session history from relay
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -222,20 +270,26 @@ export default function Home() {
   };
 
   const handleNewSession = (repoPath: string) => {
-    console.log("Creating new branch for repo:", repoPath);
+    console.log("🔵 handleNewSession called for repo:", repoPath);
+    console.log("  Current activeRepoPath:", activeRepoPath);
+    console.log("  Current sessionId:", sessionId);
 
-    setActiveRepoPath(repoPath);
-    setSessionId(null);
-    setMessages([]);
+    // Mark that we're creating a session for this specific repo (without switching to it)
+    setCreatingSessionForRepo(repoPath);
+    setIsCreatingSession(true);
+
+    console.log("  Set isCreatingSession: true for repo:", repoPath);
 
     // Request new worktree creation
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: "create_session",
-          repo_path: repoPath,
-        })
-      );
+      const msg = {
+        type: "create_session",
+        repo_path: repoPath,
+      };
+      console.log("  Sending create_session:", msg);
+      wsRef.current.send(JSON.stringify(msg));
+    } else {
+      console.error("  WebSocket not ready!");
     }
   };
 
@@ -249,6 +303,7 @@ export default function Home() {
         repos={repos}
         activeRepoPath={activeRepoPath}
         currentSessionId={sessionId}
+        creatingSessionForRepo={creatingSessionForRepo}
         onSelectSession={handleSelectSession}
         onNewSession={handleNewSession}
       />
@@ -359,11 +414,13 @@ export default function Home() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  disabled={isStreaming || !isConnected}
+                  disabled={isStreaming || !isConnected || isCreatingSession || !sessionId}
                   className="w-full p-4 bg-transparent text-gray-900 focus:outline-none placeholder:text-gray-400 resize-none border-0"
                   placeholder={
                     isStreaming
                       ? "Claude is thinking..."
+                      : !sessionId
+                      ? "Select or create a session..."
                       : isConnected
                       ? "Message Claude..."
                       : "Repository disconnected..."
@@ -380,10 +437,10 @@ export default function Home() {
                 <div className="flex items-center justify-end px-4 pb-3 pt-0">
                   <button
                     type="button"
-                    disabled={isStreaming || !isConnected || !input.trim()}
+                    disabled={isStreaming || !isConnected || !input.trim() || isCreatingSession || !sessionId}
                     onClick={handleSubmit}
                     className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
-                      !input.trim() || isStreaming || !isConnected
+                      !input.trim() || isStreaming || !isConnected || isCreatingSession || !sessionId
                         ? "bg-gray-200 text-gray-400 cursor-not-allowed"
                         : "bg-gray-900 text-white hover:bg-gray-800"
                     }`}
