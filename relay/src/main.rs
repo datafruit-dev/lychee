@@ -188,10 +188,15 @@ async fn handle_client(
     // Task 2: Forward messages from this client to browsers
     let state_clone = state.clone();
     let repo_path_clone = repo_path.clone();
+    let repo_name_clone = repo_name.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(axum::extract::ws::Message::Text(text))) = receiver.next().await {
+            println!("🔵 RELAY: Received message from client {}: {}", repo_name_clone, text);
+
             // Parse and add repo_path if needed
             if let Ok(mut msg) = serde_json::from_str::<Message>(&text) {
+                println!("🔵 RELAY: Parsed message type: {:?}", std::mem::discriminant(&msg));
+
                 // Ensure repo_path is set for client->browser messages
                 match &mut msg {
                     Message::SessionsList { repo_path: rp, .. } |
@@ -206,7 +211,10 @@ async fn handle_client(
                     _ => {}
                 }
 
+                println!("🔵 RELAY: Broadcasting message to browsers");
                 broadcast_to_browsers(&state_clone, msg).await;
+            } else {
+                println!("❌ RELAY: Failed to parse message from client: {}", text);
             }
         }
     });
@@ -284,7 +292,11 @@ async fn handle_browser(
     let clients = state.clients.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(axum::extract::ws::Message::Text(text))) = receiver.next().await {
+            println!("🔵 RELAY: Received message from browser: {}", text);
+
             if let Ok(msg) = serde_json::from_str::<Message>(&text) {
+                println!("🔵 RELAY: Parsed browser message type: {:?}", std::mem::discriminant(&msg));
+
                 // Route to appropriate client based on repo_path
                 let repo_path = match &msg {
                     Message::ListSessions { repo_path } |
@@ -295,11 +307,19 @@ async fn handle_browser(
                 };
 
                 if let Some(rp) = repo_path {
+                    println!("🔵 RELAY: Routing message to client for repo: {}", rp);
                     let clients_guard = clients.read().await;
                     if let Some(client_tx) = clients_guard.get(&rp) {
+                        println!("🔵 RELAY: Found client, sending message");
                         let _ = client_tx.send(text);
+                    } else {
+                        println!("❌ RELAY: No client found for repo: {}", rp);
                     }
+                } else {
+                    println!("⚠️ RELAY: Message has no repo_path, not routing");
                 }
+            } else {
+                println!("❌ RELAY: Failed to parse message from browser: {}", text);
             }
         }
     });
@@ -324,7 +344,13 @@ async fn broadcast_to_browsers(state: &AppState, msg: Message) {
     let browsers = state.browsers.read().await;
     let msg_text = serde_json::to_string(&msg).unwrap();
 
-    for browser_tx in browsers.iter() {
-        let _ = browser_tx.send(msg_text.clone());
+    println!("🔵 RELAY: Broadcasting to {} browsers: {}", browsers.len(), msg_text);
+
+    for (i, browser_tx) in browsers.iter().enumerate() {
+        if browser_tx.send(msg_text.clone()).is_ok() {
+            println!("🔵 RELAY: Successfully sent to browser {}", i);
+        } else {
+            println!("❌ RELAY: Failed to send to browser {}", i);
+        }
     }
 }
