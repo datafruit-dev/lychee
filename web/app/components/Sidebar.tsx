@@ -50,7 +50,7 @@ export default function Sidebar({
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [hasMounted, setHasMounted] = useState(false);
   const [expandedRepos, setExpandedRepos] = useState<Set<string>>(
-    new Set(repos.map((r) => r.path))
+    new Set()
   );
 
   useEffect(() => {
@@ -71,9 +71,17 @@ export default function Sidebar({
     }
   }, [isCollapsed, hasMounted]);
 
-  // Auto-expand new repos
+  // Auto-expand new repos only when they are first added
   useEffect(() => {
-    setExpandedRepos(new Set(repos.map((r) => r.path)));
+    setExpandedRepos((prev) => {
+      const next = new Set(prev);
+      repos.forEach((repo) => {
+        if (!prev.has(repo.path)) {
+          next.add(repo.path);
+        }
+      });
+      return next;
+    });
   }, [repos]);
 
   const toggleRepo = (repoPath: string) => {
@@ -96,19 +104,19 @@ export default function Sidebar({
     }`}>
       {/* Header with collapse button */}
       <div className={`flex items-center ${isCollapsed ? 'justify-start' : 'justify-between'} py-2 px-1.5`}>
-        <button
-          onClick={toggleSidebar}
-          className={`${isCollapsed ? 'group' : ''} w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center rounded text-gray-600 hover:text-gray-900 hover:bg-gray-100 focus:outline-none`}
-          title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-        >
-          <Image
-            src="/logo.svg"
-            alt="logo"
-            width={20}
-            height={20}
-            className={`relative z-10 flex-shrink-0 ${isCollapsed ? 'block group-hover:hidden' : ''}`}
-          />
-          {isCollapsed && (
+        {isCollapsed ? (
+          <button
+            onClick={toggleSidebar}
+            className="group w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center rounded text-gray-600 hover:text-gray-900 hover:bg-gray-100 focus:outline-none"
+            title="Expand sidebar"
+          >
+            <Image
+              src="/logo.svg"
+              alt="logo"
+              width={20}
+              height={20}
+              className="relative z-10 flex-shrink-0 block group-hover:hidden"
+            />
             <svg
               className="w-3.5 h-3.5 relative z-10 flex-shrink-0 hidden group-hover:block"
               fill="none"
@@ -122,28 +130,38 @@ export default function Sidebar({
                 d="M4 6h16M4 12h16M4 18h16"
               />
             </svg>
-          )}
-        </button>
-        {!isCollapsed && (
-          <button
-            onClick={toggleSidebar}
-            className="w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center rounded text-gray-600 hover:text-gray-900 hover:bg-gray-100 focus:outline-none"
-            title="Collapse sidebar"
-          >
-            <svg
-              className="w-3.5 h-3.5 relative z-10 flex-shrink-0"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M4 6h16M4 12h16M4 18h16"
-              />
-            </svg>
           </button>
+        ) : (
+          <>
+            <div className="w-9 h-9 flex-shrink-0 flex items-center justify-center">
+              <Image
+                src="/logo.svg"
+                alt="logo"
+                width={20}
+                height={20}
+                className="relative z-10 flex-shrink-0"
+              />
+            </div>
+            <button
+              onClick={toggleSidebar}
+              className="w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center rounded text-gray-600 hover:text-gray-900 hover:bg-gray-100 focus:outline-none"
+              title="Collapse sidebar"
+            >
+              <svg
+                className="w-3.5 h-3.5 relative z-10 flex-shrink-0"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 6h16M4 12h16M4 18h16"
+                />
+              </svg>
+            </button>
+          </>
         )}
       </div>
 
