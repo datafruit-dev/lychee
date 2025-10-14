@@ -8,17 +8,20 @@ use crossterm::{
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::io::{stdout, Write as IoWrite};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
-use tokio::sync::RwLock;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio::process::{Child, Command};
+use tokio::sync::{mpsc, RwLock};
+use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "lychee")]
-#[command(about = "Web-based Claude Code client", long_about = None)]
+#[command(about = "Browser-based Claude Code client", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -26,76 +29,178 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the lychee client
+    /// Start the client and connect to relay
     Up {
-        /// Enable debug logging
-        #[arg(long)]
+        #[arg(short, long, help = "Enable debug output")]
         debug: bool,
     },
 }
 
-// Embedded animation frames
-const CAT_FRAME_1: &str = include_str!("animation/cat1.txt");
-const CAT_FRAME_2: &str = include_str!("animation/cat2.txt");
-const CAT_FRAME_3: &str = include_str!("animation/cat3.txt");
-const CAT_AWAKE_FRAME_1: &str = include_str!("animation/catawake1.txt");
-const CAT_AWAKE_FRAME_2: &str = include_str!("animation/catawake2.txt");
-const CAT_AWAKE_FRAME_3: &str = include_str!("animation/catawake3.txt");
-
-// Message protocol
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-enum WsMessage {
-    #[serde(rename = "client_connected")]
-    ClientConnected {
-        working_dir: String,
-        repo_name: String,
-        sessions: Vec<SessionInfo>,
-    },
+enum Message {
+    // Registration
+    #[serde(rename = "register_client")]
+    RegisterClient { repo_path: String, repo_name: String },
+
+    // Browser -> Client requests
+    #[serde(rename = "list_sessions")]
+    ListSessions { repo_path: String },
     #[serde(rename = "create_session")]
-    CreateSession {
+    CreateSession { repo_path: String },
+    #[serde(rename = "load_session")]
+    LoadSession { repo_path: String, lychee_id: String },
+    #[serde(rename = "send_message")]
+    SendMessage { repo_path: String, lychee_id: String, content: String },
+
+    // Client -> Browser responses
+    #[serde(rename = "sessions_list")]
+    SessionsList {
         repo_path: String,
+        sessions: Vec<SessionInfo>,
     },
     #[serde(rename = "session_created")]
     SessionCreated {
         repo_path: String,
-        session: SessionInfo,
-    },
-    #[serde(rename = "message")]
-    Message {
-        payload: String,
-        repo_path: String,
-        session_id: Option<String>,
-    },
-    #[serde(rename = "claude_stream")]
-    ClaudeStream { payload: Value },
-    #[serde(rename = "load_session")]
-    LoadSession {
-        session_id: String,
-        repo_path: String,
+        lychee_id: String,
     },
     #[serde(rename = "session_history")]
     SessionHistory {
-        session_id: String,
+        repo_path: String,
+        lychee_id: String,
         messages: Value,
+    },
+    #[serde(rename = "claude_stream")]
+    ClaudeStream {
+        repo_path: String,
+        lychee_id: String,
+        data: Value,
+    },
+    #[serde(rename = "error")]
+    Error {
+        repo_path: Option<String>,
+        message: String,
+    },
+    #[serde(rename = "client_count")]
+    ClientCount {
+        count: usize,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SessionInfo {
-    id: String,  // branch name like "session-abc123"
+    lychee_id: String,
+    claude_session_id: Option<String>,
     created_at: String,
+    last_active: String,
 }
 
-// Shared state for TUI
-struct AppState {
-    connected: bool,
-    session_id: Option<String>,
-    messages_processed: u64,
-    start_time: Instant,
-    animation_frame: u8,
-    is_claude_running: bool,
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct SessionInfoFile {
+    #[serde(flatten)]
+    sessions: HashMap<String, SessionMetadata>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionMetadata {
+    claude_session_id: Option<String>,
+    created_at: String,
+    last_active: String,
+}
+
+#[derive(Clone)]
+struct AppState {
+    active_processes: Arc<RwLock<HashMap<String, Child>>>,
+    start_time: Instant,
+    animation_frame: Arc<RwLock<u8>>,
+    client_count: Arc<RwLock<usize>>,
+    debug: bool,
+}
+
+// Cat animation frames
+const CAT_SLEEP_FRAME_1: &str = r#"
+                       ▄▄          ▄▄
+        z             █ ░█        █ ░█
+   Z          z      █    ▀▀▀▀▀▀▀▀    ▀▄▄▄▄▄▄▄▄
+                     █                        ▒█▄▄
+                     █ ▄  ▄     ▄  ▄             ▒█
+                     █  ▀▀       ▀▀              ▒█
+    No agents      ▀▀█       ▄       ▀▀           ▒█
+    currently       ▀█      ▀ ▀      ▀▀      ▄▄▄▄  ▒█
+    running          █      ░░░             █      ▒█
+                      █    ░░░░░           █        █
+                       ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+"#;
+
+const CAT_SLEEP_FRAME_2: &str = r#"
+
+        Z              ▄▄          ▄▄
+   z          z       █ ░█        █ ░█
+                     █    ▀▀▀▀▀▀▀▀    ▀▄▄▄▄▄▄▄▄
+                     █                        ▒█▄▄
+                     █ ▄  ▄     ▄  ▄             ▒█
+    No agents        █  ▀▀       ▀▀              ▒█
+    currently      ▀▀█       ▄       ▀▀           ▒█
+    running         ▀█      ▀ ▀      ▀▀     ▄▀▀▀▀  ▒█
+                     █▄     ░░░            ▄▀      ▒█
+                       ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+"#;
+
+const CAT_SLEEP_FRAME_3: &str = r#"
+
+        z              ▄▄          ▄▄
+   z          Z       █ ░█        █ ░█
+                     █    ▀▀▀▀▀▀▀▀    ▀▄▄▄▄▄▄▄▄
+                     █                        ▒█▄▄
+                     █ ▄  ▄     ▄  ▄             ▒█
+    No agents        █  ▀▀       ▀▀              ▒█
+    currently      ▀▀█       ▄       ▀▀           ▒█
+    running         ▀█      ▀ ▀      ▀▀     ▄▀▀▀▀  ▒█
+                     █▄     ░░░            ▄▀      ▒█
+                       ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+"#;
+
+const CAT_AWAKE_FRAME_1: &str = r#"
+
+                       ▄▄          ▄▄
+                      █ ░█        █ ░█
+                     █    ▀▀▀▀▀▀▀▀    ▀▄▄▄▄▄▄▄▄
+                     █                        ▒█▄▄
+                     █   ▄▄       ▄▄             ▒█
+    Claude is        █  ▀  ▀     ▀  ▀            ▒█
+     working       ▀▀█        ▄       ▀▀          ▒█
+       •..          ▀█       ▀ ▀      ▀▀     ▄▀▀▀▀ ▒█
+                     █▄     ░░░            ▄▀      ▒█
+                       ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+"#;
+
+const CAT_AWAKE_FRAME_2: &str = r#"
+
+                       ▄▄          ▄▄
+                      █ ░█        █ ░█
+                     █    ▀▀▀▀▀▀▀▀    ▀▄▄▄▄▄▄▄▄
+                     █                        ▒█▄▄
+                     █   ▄▄       ▄▄             ▒█
+    Claude is        █  ▀  ▀     ▀  ▀            ▒█
+     working       ▀▀█        ▄       ▀▀          ▒█
+       .•.          ▀█       ▀ ▀      ▀▀     ▄▀▀▀▀ ▒█
+                     █▄     ░░░            ▄▀      ▒█
+                       ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+"#;
+
+const CAT_AWAKE_FRAME_3: &str = r#"
+
+                       ▄▄          ▄▄
+                      █ ░█        █ ░█
+                     █    ▀▀▀▀▀▀▀▀    ▀▄▄▄▄▄▄▄▄
+                     █                        ▒█▄▄
+                     █   ▄▄       ▄▄             ▒█
+    Claude is        █  ▀  ▀     ▀  ▀            ▒█
+     working       ▀▀█        ▄       ▀▀          ▒█
+       ..•          ▀█       ▀ ▀      ▀▀     ▄▀▀▀▀ ▒█
+                     █▄     ░░░            ▄▀      ▒█
+                       ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+"#;
 
 #[tokio::main]
 async fn main() {
@@ -109,702 +214,674 @@ async fn main() {
 }
 
 async fn run_client(debug: bool) {
-    let relay_url =
-        std::env::var("RELAY_URL").unwrap_or_else(|_| "ws://localhost:3001/ws".to_string());
-    let working_dir = std::env::var("LYCHEE_WORKING_DIR")
-        .unwrap_or_else(|_| std::env::current_dir().unwrap().display().to_string());
+    let relay_url = std::env::var("RELAY_URL").unwrap_or_else(|_| "ws://localhost:3001/ws".to_string());
+    let repo_path = std::env::current_dir().unwrap().display().to_string();
+    let repo_name = std::env::current_dir()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
-    let state = Arc::new(RwLock::new(AppState {
-        connected: false,
-        session_id: None,
-        messages_processed: 0,
+    let state = Arc::new(AppState {
+        active_processes: Arc::new(RwLock::new(HashMap::new())),
         start_time: Instant::now(),
-        animation_frame: 0,
-        is_claude_running: false,
-    }));
+        animation_frame: Arc::new(RwLock::new(0)),
+        client_count: Arc::new(RwLock::new(1)),
+        debug,
+    });
 
-    // Clear screen and hide cursor
+    // Clear screen and hide cursor for TUI
     if !debug {
         let mut stdout = stdout();
         stdout.execute(terminal::Clear(ClearType::All)).ok();
         stdout.execute(cursor::Hide).ok();
         stdout.execute(cursor::MoveTo(0, 0)).ok();
-        stdout.flush().ok();
     }
 
-    // Spawn TUI updater task
-    if !debug {
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            loop {
-                render_tui(&state_clone).await;
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-        });
-    } else {
-        println!("🚀 Lychee × Claude Code client starting (debug mode)...");
-        println!("📡 Relay: {}", relay_url);
-        println!("📁 Working directory: {}", working_dir);
-    }
-
-    // Connect to relay server
+    // Connect to relay
     let (ws_stream, _) = match connect_async(&relay_url).await {
-        Ok(stream) => {
-            state.write().await.connected = true;
-            if debug {
-                println!("✓ Connected to relay server\n");
-            }
-            stream
-        }
+        Ok(conn) => conn,
         Err(e) => {
-            if debug {
-                eprintln!("✗ Failed to connect: {}", e);
-            }
+            eprintln!("❌ Failed to connect to relay: {}", e);
             return;
         }
     };
 
+    if debug {
+        println!("✅ Connected to relay at {}", relay_url);
+    }
+
     let (mut write, mut read) = ws_stream.split();
 
-    // Scan for existing worktrees
-    let sessions = scan_worktrees(&working_dir, debug);
-    let repo_name = std::path::Path::new(&working_dir)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown")
-        .to_string();
-
-    // Send registration message with sessions
-    let register_msg = WsMessage::ClientConnected {
-        working_dir: working_dir.clone(),
-        repo_name,
-        sessions,
+    // Register as client
+    let register_msg = Message::RegisterClient {
+        repo_path: repo_path.clone(),
+        repo_name: repo_name.clone(),
     };
-    let register_json = serde_json::to_string(&register_msg).unwrap();
     write
-        .send(Message::Text(register_json))
+        .send(WsMessage::Text(serde_json::to_string(&register_msg).unwrap()))
         .await
-        .expect("Failed to send registration");
+        .unwrap();
 
-    // Listen for messages
-    while let Some(msg) = read.next().await {
-        match msg {
-            Ok(Message::Text(text)) => {
-                // Check for error messages from relay
-                if let Ok(error_msg) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if error_msg.get("type").and_then(|t| t.as_str()) == Some("error") {
-                        if let Some(message) = error_msg.get("message").and_then(|m| m.as_str()) {
-                            if !debug {
-                                // Show cursor before exiting
-                                let mut stdout = stdout();
-                                stdout.execute(cursor::Show).ok();
-                                stdout.execute(terminal::Clear(ClearType::All)).ok();
-                            }
-                            eprintln!("Error: {}", message);
-                            eprintln!("Another lychee client is already running in this directory.");
-                            eprintln!("Please close it before starting a new one.");
-                            std::process::exit(1);
-                        }
-                    }
-                }
+    // Create channel for outgoing messages
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
-                if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
-                    match ws_msg {
-                        WsMessage::Message { payload, session_id, .. } => {
-                            if debug {
-                                println!("📥 User: {}", payload);
-                            }
-
-                            // Mark Claude as running
-                            state.write().await.is_claude_running = true;
-
-                            let state_clone = state.clone();
-                            spawn_claude(
-                                &payload,
-                                session_id.as_deref(),
-                                &mut write,
-                                &working_dir,
-                                debug,
-                                state_clone,
-                            )
-                            .await;
-                        }
-                        WsMessage::CreateSession { repo_path } => {
-                            if debug {
-                                println!("📥 Create session in: {}", repo_path);
-                            }
-
-                            let session = create_worktree(&repo_path, debug).await;
-                            if let Some(session) = session {
-                                let response = WsMessage::SessionCreated {
-                                    repo_path,
-                                    session,
-                                };
-                                let _ = write
-                                    .send(Message::Text(serde_json::to_string(&response).unwrap()))
-                                    .await;
-                            }
-                        }
-                        WsMessage::LoadSession { session_id, repo_path } => {
-                            if debug {
-                                println!("📥 Load session: {} from {}", session_id, repo_path);
-                            }
-
-                            let (messages, error) = load_session_history(&repo_path, &session_id, debug);
-
-                            // Send error message if loading failed
-                            if let Some(error_msg) = error {
-                                let error_response = serde_json::json!({
-                                    "type": "error",
-                                    "message": error_msg
-                                });
-                                let _ = write
-                                    .send(Message::Text(error_response.to_string()))
-                                    .await;
-                            }
-
-                            let response = WsMessage::SessionHistory {
-                                session_id,
-                                messages,
-                            };
-                            let _ = write
-                                .send(Message::Text(serde_json::to_string(&response).unwrap()))
-                                .await;
-                        }
-                        _ => {}
-                    }
-                }
+    // Spawn TUI animation task
+    let state_clone = state.clone();
+    let tui_task = if !debug {
+        Some(tokio::spawn(async move {
+            loop {
+                render_tui(&state_clone).await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            Ok(Message::Close(_)) => {
-                if debug {
-                    println!("✗ Connection closed by server");
-                }
-                state.write().await.connected = false;
-                break;
-            }
-            Err(e) => {
-                if debug {
-                    eprintln!("✗ Error: {}", e);
-                }
-                state.write().await.connected = false;
-                break;
-            }
-            _ => {}
+        }))
+    } else {
+        None
+    };
+
+    // Spawn task to send messages
+    let mut write_clone = write;
+    let _send_task = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            let _ = write_clone.send(WsMessage::Text(msg)).await;
+        }
+    });
+
+    // Handle incoming messages
+    while let Some(Ok(WsMessage::Text(text))) = read.next().await {
+        if let Ok(msg) = serde_json::from_str::<Message>(&text) {
+            handle_message(msg, tx.clone(), &repo_path, &state).await;
         }
     }
 
-    // Show cursor on exit
+    // Cleanup
+    if let Some(tui) = tui_task {
+        tui.abort();
+    }
+
     if !debug {
         let mut stdout = stdout();
         stdout.execute(cursor::Show).ok();
+        stdout.execute(terminal::Clear(ClearType::All)).ok();
+    }
+
+    println!("❌ Disconnected from relay");
+}
+
+async fn handle_message(
+    msg: Message,
+    tx: mpsc::UnboundedSender<String>,
+    repo_path: &str,
+    state: &AppState,
+) {
+    match msg {
+        Message::ListSessions { .. } => {
+            let sessions = list_sessions(repo_path).await;
+            let response = Message::SessionsList {
+                repo_path: repo_path.to_string(),
+                sessions,
+            };
+            let _ = tx.send(serde_json::to_string(&response).unwrap());
+        }
+
+        Message::CreateSession { .. } => {
+            if let Some(lychee_id) = create_session(repo_path, state.debug).await {
+                let response = Message::SessionCreated {
+                    repo_path: repo_path.to_string(),
+                    lychee_id,
+                };
+                let _ = tx.send(serde_json::to_string(&response).unwrap());
+            }
+        }
+
+        Message::LoadSession { lychee_id, .. } => {
+            let messages = load_session_history(repo_path, &lychee_id, state.debug).await;
+            let response = Message::SessionHistory {
+                repo_path: repo_path.to_string(),
+                lychee_id,
+                messages,
+            };
+            let _ = tx.send(serde_json::to_string(&response).unwrap());
+        }
+
+        Message::SendMessage { lychee_id, content, .. } => {
+            // Check if already running
+            {
+                let processes = state.active_processes.read().await;
+                if processes.contains_key(&lychee_id) {
+                    let error = Message::Error {
+                        repo_path: Some(repo_path.to_string()),
+                        message: format!("Claude already running for session {}", lychee_id),
+                    };
+                    let _ = tx.send(serde_json::to_string(&error).unwrap());
+                    return;
+                }
+            }
+
+            // Update last_active immediately when message is sent
+            let lychee_dir = PathBuf::from(repo_path).join(".lychee");
+            let session_info_path = lychee_dir.join(".session-info.json");
+            if let Some(mut info) = std::fs::read_to_string(&session_info_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<SessionInfoFile>(&s).ok())
+            {
+                if let Some(metadata) = info.sessions.get_mut(&lychee_id) {
+                    metadata.last_active = chrono::Utc::now().to_rfc3339();
+                    let _ = std::fs::write(
+                        &session_info_path,
+                        serde_json::to_string_pretty(&info).unwrap(),
+                    );
+
+                    // Send updated sessions list to frontend immediately
+                    let sessions = list_sessions(repo_path).await;
+                    let update_msg = Message::SessionsList {
+                        repo_path: repo_path.to_string(),
+                        sessions,
+                    };
+                    let _ = tx.send(serde_json::to_string(&update_msg).unwrap());
+                }
+            }
+
+            // Spawn Claude in background task
+            let tx_clone = tx.clone();
+            let repo_path_clone = repo_path.to_string();
+            let lychee_id_clone = lychee_id.clone();
+            let content_clone = content.clone();
+            let state_clone = state.clone();
+
+            tokio::spawn(async move {
+                spawn_claude(tx_clone, &repo_path_clone, &lychee_id_clone, &content_clone, &state_clone).await;
+            });
+        }
+
+        Message::ClientCount { count } => {
+            let mut client_count = state.client_count.write().await;
+            *client_count = count;
+        }
+
+        _ => {}
     }
 }
 
-async fn render_tui(state: &Arc<RwLock<AppState>>) {
-    // Cycle animation frame
-    {
-        let mut state_mut = state.write().await;
-        state_mut.animation_frame = (state_mut.animation_frame + 1) % 3;
-    }
+async fn list_sessions(repo_path: &str) -> Vec<SessionInfo> {
+    let mut sessions = Vec::new();
+    let lychee_dir = PathBuf::from(repo_path).join(".lychee");
 
-    let state_read = state.read().await;
-    let mut stdout = stdout();
-
-    stdout.execute(cursor::MoveTo(0, 0)).ok();
-    stdout.execute(terminal::Clear(ClearType::All)).ok();
-
-    // Check terminal width
-    let (term_width, _) = terminal::size().unwrap_or((80, 24));
-    let show_animation = term_width > 82;
-
-    // Cat ASCII art animation
-    let cat_frame = if state_read.is_claude_running {
-        // Awake animation when Claude is working
-        match state_read.animation_frame {
-            0 => CAT_AWAKE_FRAME_1,
-            1 => CAT_AWAKE_FRAME_2,
-            2 => CAT_AWAKE_FRAME_3,
-            _ => CAT_AWAKE_FRAME_1,
+    // Load session info file
+    let session_info_path = lychee_dir.join(".session-info.json");
+    let session_metadata = if session_info_path.exists() {
+        match std::fs::read_to_string(&session_info_path) {
+            Ok(content) => serde_json::from_str::<SessionInfoFile>(&content).unwrap_or_default(),
+            Err(_) => SessionInfoFile { sessions: HashMap::new() },
         }
     } else {
-        // Sleeping animation when idle
-        match state_read.animation_frame {
-            0 => CAT_FRAME_1,
-            1 => CAT_FRAME_2,
-            2 => CAT_FRAME_3,
-            _ => CAT_FRAME_1,
-        }
+        SessionInfoFile { sessions: HashMap::new() }
     };
 
-    let cat_lines: Vec<String> = if show_animation {
-        cat_frame.lines().map(|s| s.to_string()).collect()
-    } else {
-        vec![]
-    };
-
-    let left_col_width = 50;
-    let right_col_start = if show_animation { left_col_width + 10 } else { 0 };
-
-    // Prepare right column content
-    let uptime = state_read.start_time.elapsed();
-    let uptime_str = format_duration(uptime);
-
-    let connection_status = if state_read.connected {
-        "● Connected"
-    } else {
-        "● Disconnected"
-    };
-
-    let session_count = if state_read.session_id.is_some() { 1 } else { 0 };
-
-    let right_lines = vec![
-        "Lychee Client".to_string(),
-        "━━━━━━━━━━━━━".to_string(),
-        "".to_string(),
-        connection_status.to_string(),
-        "".to_string(),
-        format!("Sessions: {}", session_count),
-        format!("Messages: {}", state_read.messages_processed),
-        format!("Uptime:   {}", uptime_str),
-        "".to_string(),
-        "Press Ctrl+C to exit".to_string(),
-    ];
-
-    // Render line by line (with 2 line offset from top)
-    let line_offset = 2;
-    let max_lines = cat_lines.len().max(right_lines.len());
-
-    for i in 0..max_lines {
-        stdout.execute(cursor::MoveTo(0, (i + line_offset) as u16)).ok();
-
-        // Left column: cat animation
-        if i < cat_lines.len() {
-            stdout.execute(SetForegroundColor(Color::Rgb { r: 128, g: 128, b: 128 })).ok();
-            stdout.execute(Print(&cat_lines[i])).ok();
-            stdout.execute(ResetColor).ok();
-        }
-
-        // Right column: info
-        if i < right_lines.len() {
-            stdout.execute(cursor::MoveTo(right_col_start, (i + line_offset) as u16)).ok();
-
-            // Apply colors for specific lines
-            if i == 0 {
-                // Title
-                stdout.execute(SetForegroundColor(Color::Cyan)).ok();
-                stdout.execute(Print(&right_lines[i])).ok();
-                stdout.execute(ResetColor).ok();
-            } else if i == 1 {
-                // Separator
-                stdout.execute(SetForegroundColor(Color::Cyan)).ok();
-                stdout.execute(Print(&right_lines[i])).ok();
-                stdout.execute(ResetColor).ok();
-            } else if i == 3 {
-                // Connection status
-                if state_read.connected {
-                    stdout.execute(SetForegroundColor(Color::Green)).ok();
-                } else {
-                    stdout.execute(SetForegroundColor(Color::Red)).ok();
+    // Scan for session directories
+    if let Ok(entries) = std::fs::read_dir(&lychee_dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("session-") {
+                        let metadata = session_metadata.sessions.get(name);
+                        sessions.push(SessionInfo {
+                            lychee_id: name.to_string(),
+                            claude_session_id: metadata.and_then(|m| m.claude_session_id.clone()),
+                            created_at: metadata
+                                .map(|m| m.created_at.clone())
+                                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+                            last_active: metadata
+                                .map(|m| m.last_active.clone())
+                                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+                        });
+                    }
                 }
-                stdout.execute(Print(&right_lines[i])).ok();
-                stdout.execute(ResetColor).ok();
-            } else if i == 9 {
-                // Exit message
-                stdout.execute(SetForegroundColor(Color::DarkGrey)).ok();
-                stdout.execute(Print(&right_lines[i])).ok();
-                stdout.execute(ResetColor).ok();
-            } else {
-                stdout.execute(Print(&right_lines[i])).ok();
             }
         }
     }
 
-    stdout.flush().ok();
+    // Sort by last_active descending
+    sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    sessions
 }
 
-fn format_duration(duration: Duration) -> String {
-    let secs = duration.as_secs();
-    let hours = secs / 3600;
-    let minutes = (secs % 3600) / 60;
-    let seconds = secs % 60;
+async fn create_session(repo_path: &str, debug: bool) -> Option<String> {
+    let lychee_id = format!("session-{}", Uuid::new_v4().to_string().split('-').next().unwrap());
+    let lychee_dir = PathBuf::from(repo_path).join(".lychee");
+    let session_dir = lychee_dir.join(&lychee_id);
 
-    if hours > 0 {
-        format!("{}h {}m {}s", hours, minutes, seconds)
-    } else if minutes > 0 {
-        format!("{}m {}s", minutes, seconds)
-    } else {
-        format!("{}s", seconds)
+    // Create .lychee directory if it doesn't exist
+    if !lychee_dir.exists() {
+        std::fs::create_dir(&lychee_dir).ok()?;
     }
+
+    // Create git worktree
+    let output = Command::new("git")
+        .arg("worktree")
+        .arg("add")
+        .arg(&session_dir)
+        .current_dir(repo_path)
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        if debug {
+            eprintln!("❌ Failed to create worktree: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        return None;
+    }
+
+    // Update session info file
+    let session_info_path = lychee_dir.join(".session-info.json");
+    let mut session_info = if session_info_path.exists() {
+        std::fs::read_to_string(&session_info_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<SessionInfoFile>(&s).ok())
+            .unwrap_or_default()
+    } else {
+        SessionInfoFile { sessions: HashMap::new() }
+    };
+
+    session_info.sessions.insert(
+        lychee_id.clone(),
+        SessionMetadata {
+            claude_session_id: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            last_active: chrono::Utc::now().to_rfc3339(),
+        },
+    );
+
+    std::fs::write(
+        session_info_path,
+        serde_json::to_string_pretty(&session_info).unwrap(),
+    ).ok()?;
+
+    if debug {
+        println!("✅ Created session: {}", lychee_id);
+    }
+
+    Some(lychee_id)
+}
+
+async fn load_session_history(repo_path: &str, lychee_id: &str, debug: bool) -> Value {
+    let lychee_dir = PathBuf::from(repo_path).join(".lychee");
+    let session_info_path = lychee_dir.join(".session-info.json");
+
+    // Get Claude session ID from mapping
+    let claude_session_id = if session_info_path.exists() {
+        std::fs::read_to_string(&session_info_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<SessionInfoFile>(&s).ok())
+            .and_then(|info| info.sessions.get(lychee_id).cloned())
+            .and_then(|metadata| metadata.claude_session_id)
+    } else {
+        None
+    };
+
+    if let Some(claude_id) = claude_session_id {
+        // Claude stores conversations in .claude/projects/ with path-based naming
+        let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+
+        // Try to find the session file by searching for it
+        // Claude's path sanitization can be complex, so let's search for the file
+        let projects_dir = PathBuf::from(&home_dir).join(".claude").join("projects");
+        let session_filename = format!("{}.jsonl", claude_id);
+
+        // Search for the session file in any project directory
+        let mut session_file = None;
+
+        if let Ok(entries) = std::fs::read_dir(&projects_dir) {
+            for entry in entries.filter_map(Result::ok) {
+                let dir_path = entry.path();
+                if dir_path.is_dir() {
+                    let possible_file = dir_path.join(&session_filename);
+                    if possible_file.exists() {
+                        // Check if this is related to our lychee session
+                        let dir_name = dir_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        if dir_name.contains(&lychee_id) {
+                            session_file = Some(possible_file);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // If we couldn't find it by searching, try the expected path
+        if session_file.is_none() {
+            // Claude sanitizes paths by replacing / with - and handling . specially
+            let session_dir_path = PathBuf::from(repo_path).join(".lychee").join(lychee_id);
+            let path_str = session_dir_path.display().to_string();
+
+            // Replace slashes with dashes, and handle the .lychee part
+            let sanitized = path_str
+                .trim_start_matches('/')
+                .replace("/.", "/-.")  // Preserve dots after slashes
+                .replace('/', "-");
+            let sanitized_path = format!("-{}", sanitized);
+
+            let expected_file = projects_dir.join(&sanitized_path).join(&session_filename);
+            if expected_file.exists() {
+                session_file = Some(expected_file);
+            }
+        }
+
+        if let Some(file_path) = session_file {
+            if debug {
+                println!("Looking for Claude history at: {:?}", file_path);
+            }
+
+            // Read JSONL file - each line is a JSON object
+            if let Ok(content) = std::fs::read_to_string(&file_path) {
+                let mut messages = Vec::new();
+
+                // Parse each line as a separate JSON message
+                for line in content.lines() {
+                    if !line.trim().is_empty() {
+                        if let Ok(entry) = serde_json::from_str::<Value>(line) {
+                            // Check if this is a user or assistant message
+                            if let Some(msg_type) = entry.get("type").and_then(|t| t.as_str()) {
+                                if msg_type == "user" || msg_type == "assistant" {
+                                    // Extract the nested message object and pass as-is
+                                    if let Some(message) = entry.get("message") {
+                                        messages.push(message.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if debug {
+                    println!("📖 Loaded {} messages for session {}", messages.len(), lychee_id);
+                    println!("   Messages: {:?}", messages);
+                }
+
+                return serde_json::json!(messages);
+            }
+        } else if debug {
+            println!("⚠️  No Claude session file found for session {}", lychee_id);
+        }
+    }
+
+    // Return empty array if no history
+    serde_json::json!([])
 }
 
 async fn spawn_claude(
-    prompt: &str,
-    session_id: Option<&str>,
-    write: &mut futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-        Message,
-    >,
-    working_dir: &str,
-    debug: bool,
-    state: Arc<RwLock<AppState>>,
+    tx: mpsc::UnboundedSender<String>,
+    repo_path: &str,
+    lychee_id: &str,
+    content: &str,
+    state: &AppState,
 ) {
-    // Build claude command
-    let mut cmd = Command::new("claude");
-    cmd.arg("-p")
-        .arg(prompt)
-        .arg("--output-format")
-        .arg("stream-json")
-        .arg("--dangerously-skip-permissions");
+    let lychee_dir = PathBuf::from(repo_path).join(".lychee");
+    let session_dir = lychee_dir.join(lychee_id);
+    let session_info_path = lychee_dir.join(".session-info.json");
 
-    // Determine actual working directory
-    let actual_dir = if let Some(sid) = session_id {
-        // Use worktree directory if session specified
-        let worktree_path = format!("{}/.lychee/{}", working_dir, sid);
-        if std::path::Path::new(&worktree_path).exists() {
-            if debug {
-                println!("🔄 Working in session: {} ({})", sid, worktree_path);
-            }
-            worktree_path
-        } else {
-            if debug {
-                println!("⚠️  Worktree not found for {}, using main dir", sid);
-            }
-            working_dir.to_string()
-        }
+    // Get Claude session ID if it exists
+    let claude_session_id = if session_info_path.exists() {
+        std::fs::read_to_string(&session_info_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<SessionInfoFile>(&s).ok())
+            .and_then(|info| info.sessions.get(lychee_id).cloned())
+            .and_then(|metadata| metadata.claude_session_id)
     } else {
-        if debug {
-            println!("🆕 Starting new session in main directory");
-        }
-        working_dir.to_string()
+        None
     };
 
-    cmd.current_dir(&actual_dir)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    // Build command
+    let mut cmd = Command::new("claude");
+    cmd.current_dir(&session_dir);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    // If we have a Claude session, use --resume with the session ID
+    // --continue won't work because each worktree is a different directory
+    if let Some(ref claude_id) = claude_session_id {
+        cmd.arg("--resume");
+        cmd.arg(claude_id);
+    }
+
+    cmd.arg("-p");
+    cmd.arg(content);
+    cmd.arg("--output-format");
+    cmd.arg("stream-json");
+
+    if state.debug {
+        println!("🚀 Spawning Claude for session {}", lychee_id);
+        if let Some(ref id) = claude_session_id {
+            println!("   Resuming Claude session: {}", id);
+        } else {
+            println!("   Starting new Claude conversation");
+        }
+    }
 
     // Spawn process
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
-            if debug {
-                eprintln!("✗ Failed to spawn claude: {}", e);
-            }
-            state.write().await.is_claude_running = false;
-            let error_msg = WsMessage::ClaudeStream {
-                payload: serde_json::json!({
-                    "type": "error",
-                    "message": format!("Failed to spawn claude: {}. Make sure Claude Code is installed.", e)
-                }),
+            let error = Message::Error {
+                repo_path: Some(repo_path.to_string()),
+                message: format!("Failed to spawn Claude: {}", e),
             };
-            let _ = write
-                .send(Message::Text(serde_json::to_string(&error_msg).unwrap()))
-                .await;
+            let _ = tx.send(serde_json::to_string(&error).unwrap());
             return;
         }
     };
 
-    let stdout = child.stdout.take().expect("Failed to capture stdout");
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let error = Message::Error {
+                repo_path: Some(repo_path.to_string()),
+                message: "Failed to capture stdout".to_string(),
+            };
+            let _ = tx.send(serde_json::to_string(&error).unwrap());
+            return;
+        }
+    };
     let mut reader = BufReader::new(stdout).lines();
 
-    // Stream each line as JSON
+    // Store process
+    {
+        let mut processes = state.active_processes.write().await;
+        processes.insert(lychee_id.to_string(), child);
+    }
+
+    let lychee_id_str = lychee_id.to_string();
+    let repo_path_str = repo_path.to_string();
+    let mut new_claude_id = None;
+
+    // Stream output (not spawned, handle inline)
     while let Ok(Some(line)) = reader.next_line().await {
         if line.trim().is_empty() {
             continue;
         }
 
-        // Parse line as JSON
-        match serde_json::from_str::<Value>(&line) {
-            Ok(json_value) => {
-                // Debug logging
-                if debug {
-                    println!("\n┌─ Claude Stream ─────────────────────");
-                    if let Ok(pretty) = serde_json::to_string_pretty(&json_value) {
-                        println!("{}", pretty);
+        if let Ok(data) = serde_json::from_str::<Value>(&line) {
+            // Extract session ID from system or init message
+            if data.get("type") == Some(&serde_json::json!("system")) ||
+               data.get("type") == Some(&serde_json::json!("init")) {
+                if let Some(session_id) = data.get("session_id").and_then(|v| v.as_str()) {
+                    new_claude_id = Some(session_id.to_string());
+                    if state.debug {
+                        println!("📝 Got Claude session ID: {}", session_id);
                     }
-                    println!("└─────────────────────────────────────\n");
-                }
-
-                // Update state
-                if let Some(stream_type) = json_value.get("type").and_then(|v| v.as_str()) {
-                    if stream_type == "result" {
-                        if let Some(claude_sid) = json_value.get("session_id").and_then(|v| v.as_str()) {
-                            state.write().await.session_id = Some(claude_sid.to_string());
-
-                            // Store the Claude session ID mapping if we have a Lychee session
-                            if let Some(lychee_sid) = session_id {
-                                let mapping_file = format!("{}/.lychee/{}/.claude_session_id", working_dir, lychee_sid);
-                                if let Err(e) = std::fs::write(&mapping_file, claude_sid) {
-                                    if debug {
-                                        eprintln!("Failed to save Claude session ID mapping: {}", e);
-                                    }
-                                }
-                            }
-                        }
-                        state.write().await.messages_processed += 1;
-                        state.write().await.is_claude_running = false;
-                    }
-                }
-
-                let stream_msg = WsMessage::ClaudeStream {
-                    payload: json_value,
-                };
-                let msg_json = serde_json::to_string(&stream_msg).unwrap();
-
-                if write.send(Message::Text(msg_json)).await.is_err() {
-                    if debug {
-                        eprintln!("✗ Failed to send stream message");
-                    }
-                    return;
                 }
             }
-            Err(e) => {
-                if debug {
-                    eprintln!("⚠️  Invalid JSON from claude: {} - {}", e, line);
-                }
-            }
+
+            // Forward to browser
+            let msg = Message::ClaudeStream {
+                repo_path: repo_path_str.clone(),
+                lychee_id: lychee_id_str.clone(),
+                data,
+            };
+            let _ = tx.send(serde_json::to_string(&msg).unwrap());
         }
     }
 
-    // Check for errors
-    let status = child.wait().await.expect("Failed to wait for claude");
-
-    if !status.success() {
-        if debug {
-            eprintln!("✗ Claude exited with status: {}", status);
-        }
-
-        state.write().await.is_claude_running = false;
-
-        // Try to capture stderr
-        if let Some(stderr) = child.stderr {
-            let mut stderr_reader = BufReader::new(stderr).lines();
-            if let Ok(Some(error_line)) = stderr_reader.next_line().await {
-                let error_msg = WsMessage::ClaudeStream {
-                    payload: serde_json::json!({
-                        "type": "error",
-                        "message": error_line
-                    }),
-                };
-                let _ = write
-                    .send(Message::Text(serde_json::to_string(&error_msg).unwrap()))
-                    .await;
+    // Update session info when Claude finishes
+    let mut sessions_updated = false;
+    if let Some(mut info) = std::fs::read_to_string(&session_info_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<SessionInfoFile>(&s).ok())
+    {
+        if let Some(metadata) = info.sessions.get_mut(&lychee_id_str) {
+            // Update Claude session ID if we got a new one
+            if let Some(claude_id) = new_claude_id {
+                metadata.claude_session_id = Some(claude_id);
             }
+            // Update last_active when response completes
+            metadata.last_active = chrono::Utc::now().to_rfc3339();
+
+            let _ = std::fs::write(
+                &session_info_path,
+                serde_json::to_string_pretty(&info).unwrap(),
+            );
+            sessions_updated = true;
         }
-    } else if debug {
-        println!("✓ Claude completed successfully");
-    }
-}
-
-fn load_session_history(repo_path: &str, session_id: &str, debug: bool) -> (Value, Option<String>) {
-    // First, read the Claude session ID mapping
-    let mapping_file = format!("{}/.lychee/{}/.claude_session_id", repo_path, session_id);
-    let claude_session_id = match std::fs::read_to_string(&mapping_file) {
-        Ok(id) => id.trim().to_string(),
-        Err(_) => {
-            if debug {
-                println!("No Claude session ID mapping found for {}", session_id);
-            }
-            // This is expected for new sessions that haven't had any messages yet
-            return (serde_json::json!([]), None);
-        }
-    };
-
-    // Claude saves sessions based on the worktree path, not the main repo path
-    // Convert worktree path to Claude's format: /path/to/repo/.lychee/session-abc -> -path-to-repo--lychee-session-abc
-    let worktree_path = format!("{}/.lychee/{}", repo_path, session_id);
-    // Replace / with - and also handle the dot in .lychee
-    let claude_dir = worktree_path.replace("/", "-").replace("-.lychee", "--lychee");
-
-    // Build file path using the actual Claude session ID
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let file_path = format!("{}/.claude/projects/{}/{}.jsonl", home, claude_dir, claude_session_id);
-
-    if debug {
-        println!("Reading session file: {} (Claude ID: {})", file_path, claude_session_id);
-        println!("Using Claude project dir: {}", claude_dir);
     }
 
-    // Read file
-    let content = match std::fs::read_to_string(&file_path) {
-        Ok(c) => c,
-        Err(e) => {
-            if debug {
-                eprintln!("Failed to read session file: {}", e);
-            }
-            // Check if it's just that Claude hasn't saved yet
-            if e.kind() == std::io::ErrorKind::NotFound {
-                // This is normal right after the first message - Claude saves asynchronously
-                return (serde_json::json!([]), None); // Don't show error for this normal case
-            }
-            return (serde_json::json!([]), Some(format!("Failed to load session history: {}", e)));
-        }
-    };
-
-    let mut messages = Vec::new();
-
-    // Parse each line
-    for line in content.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let parsed: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
+    // Send updated sessions list to frontend
+    if sessions_updated {
+        let sessions = list_sessions(&repo_path_str).await;
+        let update_msg = Message::SessionsList {
+            repo_path: repo_path_str.clone(),
+            sessions,
         };
-
-        // Get message type
-        let msg_type = parsed.get("type").and_then(|t| t.as_str());
-
-        match msg_type {
-            Some("user") => {
-                // Extract user message
-                if let Some(message) = parsed.get("message") {
-                    if let Some(content) = message.get("content") {
-                        let text = if content.is_string() {
-                            content.as_str().unwrap_or("").to_string()
-                        } else {
-                            // Skip tool_result messages
-                            continue;
-                        };
-
-                        messages.push(serde_json::json!({
-                            "role": "user",
-                            "content": text
-                        }));
-                    }
-                }
-            }
-            Some("assistant") => {
-                // Extract assistant message text only
-                if let Some(message) = parsed.get("message") {
-                    if let Some(content_blocks) = message.get("content").and_then(|c| c.as_array()) {
-                        let mut text_parts = Vec::new();
-
-                        for block in content_blocks {
-                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                    text_parts.push(text);
-                                }
-                            }
-                        }
-
-                        if !text_parts.is_empty() {
-                            messages.push(serde_json::json!({
-                                "role": "assistant",
-                                "content": text_parts.join("")
-                            }));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+        let _ = tx.send(serde_json::to_string(&update_msg).unwrap());
     }
 
-    (serde_json::json!(messages), None)
+    // Remove from active processes
+    {
+        let mut processes = state.active_processes.write().await;
+        processes.remove(&lychee_id_str);
+    }
+
+    if state.debug {
+        println!("✅ Claude finished for session {}", lychee_id_str);
+    }
 }
 
-fn scan_worktrees(working_dir: &str, debug: bool) -> Vec<SessionInfo> {
-    let lychee_dir = format!("{}/.lychee", working_dir);
+async fn render_tui(state: &Arc<AppState>) {
+    let mut stdout = stdout();
+    stdout.execute(cursor::MoveTo(0, 0)).ok();
+    stdout.execute(terminal::Clear(ClearType::All)).ok();
 
-    if debug {
-        println!("Scanning worktrees in: {}", lychee_dir);
-    }
+    let processes = state.active_processes.read().await;
+    let is_active = !processes.is_empty();
 
-    let mut sessions = Vec::new();
+    // Update and get animation frame
+    let frame = {
+        let mut frame = state.animation_frame.write().await;
+        *frame = (*frame + 1) % 3;
+        *frame
+    };
 
-    // Check if .lychee directory exists
-    if !std::path::Path::new(&lychee_dir).exists() {
-        if debug {
-            println!("No .lychee directory found");
+    // Choose cat frame
+    let cat = if is_active {
+        match frame {
+            0 => CAT_AWAKE_FRAME_1,
+            1 => CAT_AWAKE_FRAME_2,
+            _ => CAT_AWAKE_FRAME_3,
         }
-        return sessions;
-    }
-
-    // List subdirectories in .lychee
-    if let Ok(entries) = std::fs::read_dir(&lychee_dir) {
-        for entry in entries.flatten() {
-            if entry.path().is_dir() {
-                if let Some(name) = entry.file_name().to_str() {
-                    // Get creation time or use current time
-                    let created_at = entry.metadata()
-                        .ok()
-                        .and_then(|m| m.created().ok())
-                        .and_then(|t| {
-                            let secs = t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-                            Some(chrono::DateTime::from_timestamp(secs as i64, 0)?)
-                        })
-                        .unwrap_or_else(chrono::Utc::now)
-                        .to_rfc3339();
-
-                    sessions.push(SessionInfo {
-                        id: name.to_string(),
-                        created_at,
-                    });
-
-                    if debug {
-                        println!("Found worktree: {}", name);
-                    }
-                }
-            }
+    } else {
+        match frame {
+            0 => CAT_SLEEP_FRAME_1,
+            1 => CAT_SLEEP_FRAME_2,
+            _ => CAT_SLEEP_FRAME_3,
         }
+    };
+
+    let uptime = state.start_time.elapsed().as_secs();
+    let uptime_str = format!("{}:{:02}:{:02}", uptime / 3600, (uptime / 60) % 60, uptime % 60);
+    let repo_path = std::env::current_dir().unwrap().display().to_string();
+    let repo_name = std::env::current_dir()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    // Display the cat
+    stdout.execute(SetForegroundColor(Color::Cyan)).ok();
+    for line in cat.lines() {
+        stdout.execute(Print(format!("{}\n", line))).ok();
     }
+    stdout.execute(ResetColor).ok();
 
-    sessions
-}
+    stdout.execute(Print("\n")).ok();
 
-async fn create_worktree(working_dir: &str, debug: bool) -> Option<SessionInfo> {
-    use tokio::process::Command;
+    // Title
+    stdout.execute(SetForegroundColor(Color::Magenta)).ok();
+    stdout.execute(Print("  LYCHEE CLIENT\n")).ok();
+    stdout.execute(ResetColor).ok();
 
-    // Generate session ID
-    let session_id = format!("session-{}", uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>());
-    let branch_name = format!("lychee/{}", session_id);
-    let worktree_path = format!("{}/.lychee/{}", working_dir, session_id);
+    stdout.execute(SetForegroundColor(Color::DarkGrey)).ok();
+    stdout.execute(Print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")).ok();
+    stdout.execute(ResetColor).ok();
 
-    if debug {
-        println!("Creating worktree: {} with branch {}", worktree_path, branch_name);
+    stdout.execute(Print("\n")).ok();
+
+    // Repository info
+    stdout.execute(SetForegroundColor(Color::Blue)).ok();
+    stdout.execute(Print(format!("  Repository: "))).ok();
+    stdout.execute(ResetColor).ok();
+    stdout.execute(Print(format!("{}\n", repo_name))).ok();
+
+    stdout.execute(SetForegroundColor(Color::Blue)).ok();
+    stdout.execute(Print(format!("  Path:       "))).ok();
+    stdout.execute(ResetColor).ok();
+    stdout.execute(SetForegroundColor(Color::DarkGrey)).ok();
+    stdout.execute(Print(format!("{}\n", repo_path))).ok();
+    stdout.execute(ResetColor).ok();
+
+    stdout.execute(Print("\n")).ok();
+
+    // Status
+    stdout.execute(SetForegroundColor(Color::Blue)).ok();
+    stdout.execute(Print("  Status:     ")).ok();
+    stdout.execute(ResetColor).ok();
+
+    if is_active {
+        stdout.execute(SetForegroundColor(Color::Green)).ok();
+        stdout.execute(Print(format!("● Active ({} session{})\n",
+            processes.len(),
+            if processes.len() == 1 { "" } else { "s" }))).ok();
+    } else {
+        stdout.execute(SetForegroundColor(Color::Yellow)).ok();
+        stdout.execute(Print("● Waiting for messages\n")).ok();
     }
+    stdout.execute(ResetColor).ok();
 
-    // Create .lychee directory if it doesn't exist
-    let lychee_dir = format!("{}/.lychee", working_dir);
-    if !std::path::Path::new(&lychee_dir).exists() {
-        if let Err(e) = std::fs::create_dir(&lychee_dir) {
-            if debug {
-                eprintln!("Failed to create .lychee directory: {}", e);
-            }
-            return None;
-        }
-    }
+    stdout.execute(Print("\n")).ok();
 
-    // Create worktree
-    let output = Command::new("git")
-        .args(&["worktree", "add", &worktree_path, "-b", &branch_name])
-        .current_dir(working_dir)
-        .output()
-        .await;
+    // Uptime
+    stdout.execute(SetForegroundColor(Color::Blue)).ok();
+    stdout.execute(Print("  Uptime:     ")).ok();
+    stdout.execute(ResetColor).ok();
+    stdout.execute(Print(format!("{}\n", uptime_str))).ok();
 
-    match output {
-        Ok(output) if output.status.success() => {
-            if debug {
-                println!("✓ Created worktree: {}", session_id);
-            }
-            Some(SessionInfo {
-                id: session_id,
-                created_at: chrono::Utc::now().to_rfc3339(),
-            })
-        }
-        Ok(output) => {
-            if debug {
-                eprintln!("Failed to create worktree: {}", String::from_utf8_lossy(&output.stderr));
-            }
-            None
-        }
-        Err(e) => {
-            if debug {
-                eprintln!("Failed to run git command: {}", e);
-            }
-            None
-        }
-    }
+    stdout.execute(Print("\n")).ok();
+
+    // Client count
+    let client_count = state.client_count.read().await;
+    stdout.execute(SetForegroundColor(Color::Blue)).ok();
+    stdout.execute(Print("  Clients:    ")).ok();
+    stdout.execute(ResetColor).ok();
+    stdout.execute(SetForegroundColor(Color::Cyan)).ok();
+    stdout.execute(Print(format!("{} connected on this machine\n", *client_count))).ok();
+    stdout.execute(ResetColor).ok();
+
+    stdout.execute(Print("\n")).ok();
+    stdout.execute(SetForegroundColor(Color::DarkGrey)).ok();
+    stdout.execute(Print("  Press Ctrl+C to exit\n")).ok();
+    stdout.execute(ResetColor).ok();
+
+    stdout.flush().ok();
 }

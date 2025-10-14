@@ -7,105 +7,86 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{mpsc, RwLock};
 
-// Message protocol
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-enum WsMessage {
-    // Client messages
+enum Message {
+    // Registration
+    #[serde(rename = "register_client")]
+    RegisterClient { repo_path: String, repo_name: String },
+    #[serde(rename = "register_browser")]
+    RegisterBrowser,
+
+    // Client status
     #[serde(rename = "client_connected")]
-    ClientConnected {
-        working_dir: String,
-        repo_name: String,
-        sessions: Vec<SessionInfo>,
-    },
+    ClientConnected { repo_path: String, repo_name: String },
+    #[serde(rename = "client_disconnected")]
+    ClientDisconnected { repo_path: String },
+
+    // Browser -> Client (via relay)
+    #[serde(rename = "list_sessions")]
+    ListSessions { repo_path: String },
     #[serde(rename = "create_session")]
-    CreateSession {
+    CreateSession { repo_path: String },
+    #[serde(rename = "load_session")]
+    LoadSession { repo_path: String, lychee_id: String },
+    #[serde(rename = "send_message")]
+    SendMessage { repo_path: String, lychee_id: String, content: String },
+
+    // Client -> Browser (via relay)
+    #[serde(rename = "sessions_list")]
+    SessionsList {
         repo_path: String,
+        sessions: Vec<SessionInfo>
+    },
+    #[serde(rename = "client_count")]
+    ClientCount {
+        count: usize,
     },
     #[serde(rename = "session_created")]
     SessionCreated {
         repo_path: String,
-        session: SessionInfo,
-    },
-    #[serde(rename = "sessions_updated")]
-    SessionsUpdated {
-        repo_path: String,
-        sessions: Vec<SessionInfo>,
-    },
-
-    // Browser messages
-    #[serde(rename = "register_browser")]
-    RegisterBrowser,
-
-    // Common messages
-    #[serde(rename = "message")]
-    Message {
-        payload: String,
-        repo_path: String,
-        session_id: Option<String>,
-    },
-    #[serde(rename = "claude_stream")]
-    ClaudeStream { payload: serde_json::Value },
-    #[serde(rename = "load_session")]
-    LoadSession {
-        session_id: String,
-        repo_path: String,
+        lychee_id: String
     },
     #[serde(rename = "session_history")]
     SessionHistory {
-        session_id: String,
-        messages: serde_json::Value,
-    },
-
-    // Status messages
-    #[serde(rename = "repo_added")]
-    RepoAdded {
-        repo: RepoInfo,
-    },
-    #[serde(rename = "repo_removed")]
-    RepoRemoved {
         repo_path: String,
+        lychee_id: String,
+        messages: serde_json::Value
+    },
+    #[serde(rename = "claude_stream")]
+    ClaudeStream {
+        repo_path: String,
+        lychee_id: String,
+        data: serde_json::Value
+    },
+    #[serde(rename = "error")]
+    Error {
+        repo_path: Option<String>,
+        message: String
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SessionInfo {
-    id: String,
+    lychee_id: String,
+    claude_session_id: Option<String>,
     created_at: String,
+    last_active: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RepoInfo {
-    name: String,
-    path: String,
-    sessions: Vec<SessionInfo>,
-}
-
-struct ClientInfo {
-    tx: tokio::sync::mpsc::UnboundedSender<String>,
-    working_dir: String,
-    repo_name: String,
-    sessions: Vec<SessionInfo>,
-}
-
-// Shared application state
 #[derive(Clone)]
 struct AppState {
-    // Broadcast channel for sending to all browsers
-    browser_tx: broadcast::Sender<String>,
-    // Map of repo_path -> ClientInfo
-    clients: Arc<RwLock<HashMap<String, ClientInfo>>>,
+    clients: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    browsers: Arc<RwLock<Vec<mpsc::UnboundedSender<String>>>>,
 }
 
 #[tokio::main]
 async fn main() {
-    let (browser_tx, _) = broadcast::channel(100);
-
     let state = AppState {
-        browser_tx,
         clients: Arc::new(RwLock::new(HashMap::new())),
+        browsers: Arc::new(RwLock::new(Vec::new())),
     };
 
     let app = Router::new()
@@ -113,7 +94,7 @@ async fn main() {
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3001));
-    println!("Relay server listening on {}", addr);
+    println!("🚀 Relay server listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
@@ -126,33 +107,23 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
 async fn handle_connection(socket: WebSocket, state: AppState) {
     let (sender, mut receiver) = socket.split();
 
-    // First message determines client type
-    let client_type = match receiver.next().await {
+    // Wait for registration message
+    let registration = match receiver.next().await {
         Some(Ok(axum::extract::ws::Message::Text(text))) => {
-            match serde_json::from_str::<WsMessage>(&text) {
-                Ok(WsMessage::ClientConnected { working_dir, repo_name, sessions }) => {
-                    println!("✓ Client connected: {} ({})", repo_name, working_dir);
-                    Some(ClientType::Client { working_dir, repo_name, sessions })
-                }
-                Ok(WsMessage::RegisterBrowser) => {
-                    println!("✓ Browser connected");
-                    Some(ClientType::Browser)
-                }
-                _ => None,
-            }
+            serde_json::from_str::<Message>(&text).ok()
         }
         _ => None,
     };
 
-    match client_type {
-        Some(ClientType::Client { working_dir, repo_name, sessions }) => {
-            handle_client(sender, receiver, state, working_dir, repo_name, sessions).await;
+    match registration {
+        Some(Message::RegisterClient { repo_path, repo_name }) => {
+            handle_client(sender, receiver, state, repo_path, repo_name).await;
         }
-        Some(ClientType::Browser) => {
+        Some(Message::RegisterBrowser) => {
             handle_browser(sender, receiver, state).await;
         }
-        None => {
-            println!("✗ Invalid connection - no registration");
+        _ => {
+            println!("❌ Invalid registration message");
         }
     }
 }
@@ -161,106 +132,81 @@ async fn handle_client(
     mut sender: futures_util::stream::SplitSink<WebSocket, axum::extract::ws::Message>,
     mut receiver: futures_util::stream::SplitStream<WebSocket>,
     state: AppState,
-    working_dir: String,
+    repo_path: String,
     repo_name: String,
-    sessions: Vec<SessionInfo>,
 ) {
-    // Check if client already exists for this working_dir
+    println!("✅ Client connected: {} ({})", repo_name, repo_path);
+
+    // Check if already connected
     {
         let clients = state.clients.read().await;
-        if clients.contains_key(&working_dir) {
-            println!("✗ Client already connected for {}", working_dir);
+        if clients.contains_key(&repo_path) {
             let _ = sender.send(axum::extract::ws::Message::Text(
-                r#"{"type":"error","message":"Client already connected for this directory"}"#.to_string()
+                serde_json::to_string(&Message::Error {
+                    repo_path: Some(repo_path.clone()),
+                    message: "Client already connected for this directory".to_string(),
+                }).unwrap()
             )).await;
             return;
         }
     }
 
     // Create channel for this client
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
-    // Register this client
+    // Register client
     {
         let mut clients = state.clients.write().await;
-        clients.insert(
-            working_dir.clone(),
-            ClientInfo {
-                tx,
-                working_dir: working_dir.clone(),
-                repo_name: repo_name.clone(),
-                sessions: sessions.clone(),
-            },
-        );
+        clients.insert(repo_path.clone(), tx);
     }
 
-    // Broadcast repo added to all browsers
-    let repo_msg = WsMessage::RepoAdded {
-        repo: RepoInfo {
-            name: repo_name.clone(),
-            path: working_dir.clone(),
-            sessions: sessions.clone(),
-        },
-    };
-    let _ = state.browser_tx.send(serde_json::to_string(&repo_msg).unwrap());
+    // Notify all browsers
+    broadcast_to_browsers(&state, Message::ClientConnected {
+        repo_path: repo_path.clone(),
+        repo_name: repo_name.clone(),
+    }).await;
 
-    // Task 1: Send messages to client
+    // Send client count to ALL clients (including this one)
+    {
+        let clients = state.clients.read().await;
+        let count = clients.len();
+        let count_msg = serde_json::to_string(&Message::ClientCount { count }).unwrap();
+        for client_tx in clients.values() {
+            let _ = client_tx.send(count_msg.clone());
+        }
+    }
+
+    // Task 1: Forward messages from browsers to this client
     let mut send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if sender
-                .send(axum::extract::ws::Message::Text(msg))
-                .await
-                .is_err()
-            {
+            if sender.send(axum::extract::ws::Message::Text(msg)).await.is_err() {
                 break;
             }
         }
     });
 
-    // Task 2: Receive output from client, broadcast to browsers
-    let browser_tx = state.browser_tx.clone();
-    let clients = state.clients.clone();
+    // Task 2: Forward messages from this client to browsers
+    let state_clone = state.clone();
+    let repo_path_clone = repo_path.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(axum::extract::ws::Message::Text(text))) = receiver.next().await {
-            println!("Client → Browsers: {}", text.chars().take(100).collect::<String>());
-
-            // Handle specific message types
-            if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
-                match ws_msg {
-                    WsMessage::SessionCreated { repo_path, session } => {
-                        println!("📦 Received SessionCreated for {} - {}", repo_path, session.id);
-                        // Update stored sessions
-                        {
-                            let mut clients_guard = clients.write().await;
-                            if let Some(client_info) = clients_guard.get_mut(&repo_path) {
-                                client_info.sessions.push(session.clone());
-                            }
-                        }
-
-                        // Forward the SessionCreated message as-is first
-                        println!("📡 Broadcasting SessionCreated to browsers");
-                        if browser_tx.send(text.clone()).is_err() {
-                            println!("⚠️  Failed to broadcast SessionCreated - no browsers listening?");
-                        }
-
-                        // Then broadcast session update for other browsers
-                        let clients_guard = clients.read().await;
-                        if let Some(client_info) = clients_guard.get(&repo_path) {
-                            let update_msg = WsMessage::SessionsUpdated {
-                                repo_path,
-                                sessions: client_info.sessions.clone(),
-                            };
-                            let _ = browser_tx.send(serde_json::to_string(&update_msg).unwrap());
-                        }
+            // Parse and add repo_path if needed
+            if let Ok(mut msg) = serde_json::from_str::<Message>(&text) {
+                // Ensure repo_path is set for client->browser messages
+                match &mut msg {
+                    Message::SessionsList { repo_path: rp, .. } |
+                    Message::SessionCreated { repo_path: rp, .. } |
+                    Message::SessionHistory { repo_path: rp, .. } |
+                    Message::ClaudeStream { repo_path: rp, .. } => {
+                        *rp = repo_path_clone.clone();
                     }
-                    _ => {
-                        // Forward all other messages as-is
-                        let _ = browser_tx.send(text);
+                    Message::Error { repo_path: rp, .. } => {
+                        *rp = Some(repo_path_clone.clone());
                     }
+                    _ => {}
                 }
-            } else {
-                // Forward non-JSON messages as-is
-                let _ = browser_tx.send(text);
+
+                broadcast_to_browsers(&state_clone, msg).await;
             }
         }
     });
@@ -274,97 +220,84 @@ async fn handle_client(
     // Cleanup
     {
         let mut clients = state.clients.write().await;
-        clients.remove(&working_dir);
+        clients.remove(&repo_path);
     }
 
-    // Broadcast repo removed to all browsers
-    let remove_msg = WsMessage::RepoRemoved {
-        repo_path: working_dir,
-    };
-    let _ = state.browser_tx.send(serde_json::to_string(&remove_msg).unwrap());
+    // Notify browsers
+    broadcast_to_browsers(&state, Message::ClientDisconnected {
+        repo_path: repo_path.clone(),
+    }).await;
 
-    println!("✗ Client disconnected: {}", repo_name);
-}
-
-async fn handle_browser(
-    sender: futures_util::stream::SplitSink<WebSocket, axum::extract::ws::Message>,
-    receiver: futures_util::stream::SplitStream<WebSocket>,
-    state: AppState,
-) {
-    use tokio::sync::mpsc;
-
-    let (response_tx, mut response_rx) = mpsc::unbounded_channel::<String>();
-
-    // Send current repos immediately
+    // Send updated client count to all remaining clients
     {
         let clients = state.clients.read().await;
-        for client_info in clients.values() {
-            let repo_msg = WsMessage::RepoAdded {
-                repo: RepoInfo {
-                    name: client_info.repo_name.clone(),
-                    path: client_info.working_dir.clone(),
-                    sessions: client_info.sessions.clone(),
-                },
-            };
-            let _ = response_tx.send(serde_json::to_string(&repo_msg).unwrap());
+        let count = clients.len();
+        let count_msg = serde_json::to_string(&Message::ClientCount { count }).unwrap();
+        for client_tx in clients.values() {
+            let _ = client_tx.send(count_msg.clone());
         }
     }
 
-    // Subscribe to broadcasts
-    let mut browser_rx = state.browser_tx.subscribe();
+    println!("❌ Client disconnected: {}", repo_name);
+}
 
-    // Task 1: Send output to browser (from broadcasts + direct responses)
-    let mut sender_clone = sender;
+async fn handle_browser(
+    mut sender: futures_util::stream::SplitSink<WebSocket, axum::extract::ws::Message>,
+    mut receiver: futures_util::stream::SplitStream<WebSocket>,
+    state: AppState,
+) {
+    println!("✅ Browser connected");
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+
+    // Register browser
+    {
+        let mut browsers = state.browsers.write().await;
+        browsers.push(tx);
+    }
+
+    // Send current connected clients
+    {
+        let clients = state.clients.read().await;
+        for repo_path in clients.keys() {
+            let repo_name = repo_path.split('/').last().unwrap_or("unknown");
+            let msg = Message::ClientConnected {
+                repo_path: repo_path.clone(),
+                repo_name: repo_name.to_string(),
+            };
+            let _ = sender.send(axum::extract::ws::Message::Text(
+                serde_json::to_string(&msg).unwrap()
+            )).await;
+        }
+    }
+
+    // Task 1: Forward broadcasts to this browser
     let mut send_task = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                // From broadcast
-                msg = browser_rx.recv() => {
-                    if let Ok(msg) = msg {
-                        if sender_clone.send(axum::extract::ws::Message::Text(msg)).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-                // From direct responses
-                Some(msg) = response_rx.recv() => {
-                    if sender_clone.send(axum::extract::ws::Message::Text(msg)).await.is_err() {
-                        break;
-                    }
-                }
+        while let Some(msg) = rx.recv().await {
+            if sender.send(axum::extract::ws::Message::Text(msg)).await.is_err() {
+                break;
             }
         }
     });
 
-    // Task 2: Receive commands from browser
+    // Task 2: Forward browser requests to appropriate clients
     let clients = state.clients.clone();
     let mut recv_task = tokio::spawn(async move {
-        let mut receiver = receiver;
         while let Some(Ok(axum::extract::ws::Message::Text(text))) = receiver.next().await {
-            if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
-                match ws_msg {
-                    WsMessage::Message { repo_path, .. } |
-                    WsMessage::CreateSession { repo_path } |
-                    WsMessage::LoadSession { repo_path, .. } => {
-                        // Forward to specific client
-                        let clients_guard = clients.read().await;
-                        if let Some(client_info) = clients_guard.get(&repo_path) {
-                            println!("Browser → Client ({}): {}",
-                                client_info.repo_name,
-                                text.chars().take(50).collect::<String>()
-                            );
-                            let _ = client_info.tx.send(text);
-                        } else {
-                            println!("✗ No client connected for {}", repo_path);
-                            let error_msg = serde_json::json!({
-                                "type": "error",
-                                "message": format!("No client connected for {}", repo_path)
-                            });
-                            let _ = response_tx.send(error_msg.to_string());
-                        }
-                    }
-                    _ => {
-                        println!("Browser: Unknown message type");
+            if let Ok(msg) = serde_json::from_str::<Message>(&text) {
+                // Route to appropriate client based on repo_path
+                let repo_path = match &msg {
+                    Message::ListSessions { repo_path } |
+                    Message::CreateSession { repo_path } |
+                    Message::LoadSession { repo_path, .. } |
+                    Message::SendMessage { repo_path, .. } => Some(repo_path.clone()),
+                    _ => None,
+                };
+
+                if let Some(rp) = repo_path {
+                    let clients_guard = clients.read().await;
+                    if let Some(client_tx) = clients_guard.get(&rp) {
+                        let _ = client_tx.send(text);
                     }
                 }
             }
@@ -377,10 +310,21 @@ async fn handle_browser(
         _ = &mut recv_task => send_task.abort(),
     }
 
-    println!("✗ Browser disconnected");
+    // Cleanup - remove this browser from the list
+    // Note: This is inefficient but browsers list should be small
+    {
+        let mut browsers = state.browsers.write().await;
+        browsers.retain(|b| !b.is_closed());
+    }
+
+    println!("❌ Browser disconnected");
 }
 
-enum ClientType {
-    Client { working_dir: String, repo_name: String, sessions: Vec<SessionInfo> },
-    Browser,
+async fn broadcast_to_browsers(state: &AppState, msg: Message) {
+    let browsers = state.browsers.read().await;
+    let msg_text = serde_json::to_string(&msg).unwrap();
+
+    for browser_tx in browsers.iter() {
+        let _ = browser_tx.send(msg_text.clone());
+    }
 }

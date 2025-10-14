@@ -3,28 +3,51 @@
 import { useState, useRef, useEffect } from "react";
 import MarkdownRenderer from "./MarkdownRenderer";
 import StatusBar from "./components/StatusBar";
-import Sidebar, { Repo } from "./components/Sidebar";
+import Sidebar, { Repo, Session } from "./components/Sidebar";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3001/ws";
 
 interface Message {
   role: "user" | "assistant" | "system";
-  content: string;
+  content: string | Array<{type: string; text?: string}>;
+}
+
+// Helper to extract text content from Claude's message format
+function extractMessageContent(content: string | Array<{type: string; text?: string}>): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  // If it's an array of blocks, extract text from text blocks
+  return content
+    .filter((block: any) => block.type === "text")
+    .map((block: any) => block.text || "")
+    .join("");
 }
 
 export default function Home() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
-  const [isStreaming, setIsStreaming] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [repos, setRepos] = useState<Repo[]>([]);
   const [activeRepoPath, setActiveRepoPath] = useState<string | null>(null);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [creatingSessionForRepo, setCreatingSessionForRepo] = useState<string | null>(null);
+  const [activeStreams, setActiveStreams] = useState<Set<string>>(new Set());
 
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const currentAssistantContent = useRef("");
+  const currentStreamContent = useRef<{ [key: string]: string }>({});
+  const sessionIdRef = useRef<string | null>(null);
+  const activeRepoPathRef = useRef<string | null>(null);
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    activeRepoPathRef.current = activeRepoPath;
+  }, [activeRepoPath]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -36,103 +59,85 @@ export default function Home() {
     const ws = new WebSocket(WS_URL);
 
     ws.onopen = () => {
-      console.log("Connected to relay server");
-
-      // Register as browser client
       ws.send(JSON.stringify({ type: "register_browser" }));
     };
 
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        console.log("WebSocket message received:", message.type, message);
 
-        // Handle session_created FIRST before any other message type
-        if (message.type === "session_created") {
-          console.log("🎯 SESSION CREATED RECEIVED:", message);
-          console.log("  Session ID:", message.session?.id);
-          console.log("  Repo Path:", message.repo_path);
+        if (message.type === "client_connected") {
 
-          // Just add the session to the list, don't switch to it
-          if (message.session && message.session.id) {
-            setIsCreatingSession(false);
-            setCreatingSessionForRepo(null);
-
-            // Update repos with new session (add to beginning for newest first)
-            setRepos((prev) => {
-              const updated = prev.map((r) =>
-                r.path === message.repo_path
-                  ? { ...r, sessions: [message.session, ...r.sessions] }
-                  : r
-              );
-              console.log("Updated repos:", updated);
-              return updated;
-            });
-
-            console.log("✅ Session created and added to list");
-          } else {
-            console.error("❌ Invalid session_created message - missing session or id");
-          }
-          return; // Stop processing other handlers
-        }
-
-        if (message.type === "repo_added") {
-          console.log("Repo added:", message.repo);
-          setRepos((prev) => [...prev, message.repo]);
-        } else if (message.type === "repo_removed") {
-          console.log("Repo removed:", message.repo_path);
-          setRepos((prev) => prev.filter((r) => r.path !== message.repo_path));
-          // Clear active repo if it was removed
-          if (activeRepoPath === message.repo_path) {
-            setActiveRepoPath(null);
-            setMessages([]);
-            setSessionId(null);
-          }
-        } else if (message.type === "sessions_updated") {
-          console.log("📋 SESSIONS_UPDATED received:", message);
-
-          // Check if this is for a repo we're creating a session for
-          // We need to access the state value directly here
-          setCreatingSessionForRepo((currentRepo) => {
-            if (currentRepo === message.repo_path) {
-              console.log("  Session creation complete for repo:", currentRepo);
-              setIsCreatingSession(false);
-              return null;
+          // Add or update repo
+          setRepos((prev) => {
+            const existing = prev.find(r => r.path === message.repo_path);
+            if (existing) {
+              return prev;
             }
-            return currentRepo;
+            const newRepo: Repo = {
+              name: message.repo_name,
+              path: message.repo_path,
+              sessions: []
+            };
+            return [...prev, newRepo];
           });
 
+          // Request sessions for this repo
+          ws.send(JSON.stringify({
+            type: "list_sessions",
+            repo_path: message.repo_path
+          }));
+
+        } else if (message.type === "client_disconnected") {
+          // Remove the repo from the list first
+          setRepos((prev) => prev.filter((r) => r.path !== message.repo_path));
+
+          // Clear state if this was the active repo
+          if (activeRepoPathRef.current === message.repo_path) {
+            setActiveRepoPath(null);
+            setSessionId(null);
+            setMessages([]);
+          }
+
+        } else if (message.type === "sessions_list") {
           setRepos((prev) =>
             prev.map((r) =>
               r.path === message.repo_path
-                ? { ...r, sessions: message.sessions }
+                ? { ...r, sessions: message.sessions || [] }
                 : r
             )
           );
+
+        } else if (message.type === "session_created") {
+          setIsCreatingSession(false);
+          setCreatingSessionForRepo(null);
+
+          // Request updated sessions list
+          ws.send(JSON.stringify({
+            type: "list_sessions",
+            repo_path: message.repo_path
+          }));
+
         } else if (message.type === "session_history") {
-          console.log("Received session history:", message.messages);
           setMessages(message.messages || []);
+
         } else if (message.type === "claude_stream") {
-          handleClaudeStream(message.payload);
+          handleClaudeStream(message.lychee_id, message.data);
+
         } else if (message.type === "error") {
           setMessages((prev) => [
             ...prev,
             { role: "system", content: message.message },
           ]);
-        } else {
-          console.warn("Unknown message type:", message.type, message);
+          setIsCreatingSession(false);
+          setCreatingSessionForRepo(null);
         }
       } catch (err) {
         console.error("Failed to parse message:", err);
       }
     };
 
-    ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
-    };
-
     ws.onclose = () => {
-      console.log("Disconnected from relay server");
       setRepos([]);
     };
 
@@ -141,97 +146,91 @@ export default function Home() {
     return () => {
       ws.close();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handleClaudeStream = (stream: Record<string, any>) => {
-    const streamType = stream.type;
+  const handleClaudeStream = (lycheeId: string, data: any) => {
+    const streamType = data.type;
 
-    if (streamType === "init") {
-      // Session initialized
-      console.log("🚀 Claude session started");
-      setIsStreaming(true);
-      currentAssistantContent.current = "";
+    if (streamType === "init" || streamType === "system") {
+      setActiveStreams(prev => new Set(prev).add(lycheeId));
+      currentStreamContent.current[lycheeId] = "";
 
     } else if (streamType === "assistant") {
-      // Claude's response chunk
-      const content = stream.message?.content || [];
-
-      // Extract text from content blocks
+      const content = data.message?.content || [];
       const text = content
-        .filter((block: { type: string }) => block.type === "text")
-        .map((block: { text: string }) => block.text)
+        .filter((block: any) => block.type === "text")
+        .map((block: any) => block.text)
         .join("");
 
-      // Accumulate content
-      currentAssistantContent.current += text;
+      currentStreamContent.current[lycheeId] =
+        (currentStreamContent.current[lycheeId] || "") + text;
 
-      // Update or add assistant message
-      setMessages((prev) => {
-        const lastMessage = prev[prev.length - 1];
-        if (lastMessage && lastMessage.role === "assistant") {
-          // Update existing message
-          return [
-            ...prev.slice(0, -1),
-            { ...lastMessage, content: currentAssistantContent.current },
-          ];
-        } else {
-          // Add new message
-          return [
-            ...prev,
-            { role: "assistant", content: currentAssistantContent.current },
-          ];
-        }
-      });
+      if (lycheeId === sessionIdRef.current) {
+        setMessages(prev => {
+          const lastMessage = prev[prev.length - 1];
+          if (lastMessage && lastMessage.role === "assistant") {
+            return [
+              ...prev.slice(0, -1),
+              { ...lastMessage, content: currentStreamContent.current[lycheeId] },
+            ];
+          } else {
+            return [
+              ...prev,
+              { role: "assistant", content: currentStreamContent.current[lycheeId] },
+            ];
+          }
+        });
+      }
 
     } else if (streamType === "result") {
-      // Final stats message
-      // Don't overwrite the Lychee session ID with Claude's session ID
-      setIsStreaming(false);
-      currentAssistantContent.current = "";
+      setActiveStreams(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(lycheeId);
+        return newSet;
+      });
+      delete currentStreamContent.current[lycheeId];
 
-      console.log("✓ Response complete");
-      console.log(`💰 Cost: $${stream.total_cost_usd}`);
-      console.log(`⏱️  Duration: ${stream.duration_ms}ms`);
 
     } else if (streamType === "error") {
-      // Error message
-      setIsStreaming(false);
-      setMessages((prev) => [
-        ...prev,
-        { role: "system", content: `Error: ${stream.message}` },
-      ]);
+      setActiveStreams(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(lycheeId);
+        return newSet;
+      });
+      delete currentStreamContent.current[lycheeId];
+
+      if (lycheeId === sessionIdRef.current) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "system", content: `Error: ${data.message}` },
+        ]);
+      }
     }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isStreaming) return;
+    if (!input.trim() || (sessionId && activeStreams.has(sessionId))) return;
 
-    // Check if a repo is selected
     if (!activeRepoPath) {
       return;
     }
 
-    // Add user message to UI immediately
     const userMessage: Message = {
       role: "user",
       content: input.trim(),
     };
     setMessages((prev) => [...prev, userMessage]);
 
-    // Send to relay
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({
-          type: "message",
+          type: "send_message",
           repo_path: activeRepoPath,
-          payload: input.trim(),
-          session_id: sessionId,
+          lychee_id: sessionId,
+          content: input.trim(),
         })
       );
-      setIsStreaming(true);
     }
 
     setInput("");
@@ -240,21 +239,17 @@ export default function Home() {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
       if (e.shiftKey) {
-        // Allow default behavior for shift+enter (new line)
         return;
       } else {
-        // Prevent default and submit on enter
         e.preventDefault();
         handleSubmit(e);
       }
     }
   };
 
-  const handleSelectSession = (repoPath: string, sessionId: string) => {
-    console.log("Selected session:", sessionId, "in repo:", repoPath);
-
+  const handleSelectSession = (repoPath: string, lycheeId: string) => {
     setActiveRepoPath(repoPath);
-    setSessionId(sessionId);
+    setSessionId(lycheeId);
     setIsCreatingSession(false);
 
     // Request session history from relay
@@ -262,7 +257,7 @@ export default function Home() {
       wsRef.current.send(
         JSON.stringify({
           type: "load_session",
-          session_id: sessionId,
+          lychee_id: lycheeId,
           repo_path: repoPath,
         })
       );
@@ -270,37 +265,36 @@ export default function Home() {
   };
 
   const handleNewSession = (repoPath: string) => {
-    console.log("🔵 handleNewSession called for repo:", repoPath);
-    console.log("  Current activeRepoPath:", activeRepoPath);
-    console.log("  Current sessionId:", sessionId);
-
-    // Mark that we're creating a session for this specific repo (without switching to it)
     setCreatingSessionForRepo(repoPath);
     setIsCreatingSession(true);
 
-    console.log("  Set isCreatingSession: true for repo:", repoPath);
-
-    // Request new worktree creation
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      const msg = {
-        type: "create_session",
-        repo_path: repoPath,
-      };
-      console.log("  Sending create_session:", msg);
-      wsRef.current.send(JSON.stringify(msg));
-    } else {
-      console.error("  WebSocket not ready!");
+      wsRef.current.send(
+        JSON.stringify({
+          type: "create_session",
+          repo_path: repoPath,
+        })
+      );
     }
   };
 
   const activeRepo = repos.find((r) => r.path === activeRepoPath);
   const isConnected = activeRepoPath && repos.some((r) => r.path === activeRepoPath);
 
+  // Update repos to show active streams
+  const reposWithActiveStreams = repos.map(repo => ({
+    ...repo,
+    sessions: repo.sessions.map(session => ({
+      ...session,
+      isStreaming: activeStreams.has(session.lychee_id)
+    }))
+  }));
+
   return (
     <div className="flex h-screen bg-gradient-to-b from-gray-50 to-white text-gray-900">
       {/* Sidebar */}
       <Sidebar
-        repos={repos}
+        repos={reposWithActiveStreams}
         activeRepoPath={activeRepoPath}
         currentSessionId={sessionId}
         creatingSessionForRepo={creatingSessionForRepo}
@@ -337,16 +331,6 @@ export default function Home() {
                 {activeRepo?.name || "Unknown Repo"}
                 {sessionId && ` / ${sessionId}`}
               </div>
-              <div className="flex items-center gap-2">
-                <div
-                  className={`w-3 h-3 rounded-full ${
-                    isConnected ? "bg-green-500" : "bg-red-500"
-                  } animate-pulse`}
-                />
-                <span className="text-sm text-gray-600">
-                  {isConnected ? "Connected" : "Disconnected"}
-                </span>
-              </div>
             </div>
 
             {/* Messages area */}
@@ -372,8 +356,8 @@ export default function Home() {
                       <div className="max-w-3xl mx-auto px-4 py-3">
                         <div className="text-xs text-gray-500 mb-2">Claude</div>
                         <div className="text-gray-900">
-                          <MarkdownRenderer content={msg.content} />
-                          {isStreaming && idx === messages.length - 1 && (
+                          <MarkdownRenderer content={extractMessageContent(msg.content)} />
+                          {sessionId && activeStreams.has(sessionId) && idx === messages.length - 1 && (
                             <span className="inline-block w-2 h-4 ml-1 bg-gray-600 animate-pulse" />
                           )}
                         </div>
@@ -390,7 +374,7 @@ export default function Home() {
                           <div className="text-xs text-gray-500 mb-1">System</div>
                         )}
                         <div className="whitespace-pre-wrap break-words">
-                          {msg.content}
+                          {extractMessageContent(msg.content)}
                         </div>
                       </div>
                     )}
@@ -402,22 +386,18 @@ export default function Home() {
 
             {/* Input area */}
             <div className="pb-4 pt-4">
-              <div
-                className={`border rounded-lg bg-white shadow-sm ${
-                  !isStreaming ? "awaiting-border" : "border-gray-200"
-                }`}
-              >
+              <div className="border border-gray-200 rounded-lg bg-white shadow-sm">
                 <div className="overflow-hidden rounded-t-lg">
-                  <StatusBar status={null} isStreaming={isStreaming} />
+                  <StatusBar status={null} isStreaming={sessionId ? activeStreams.has(sessionId) : false} />
                 </div>
                 <textarea
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  disabled={isStreaming || !isConnected || isCreatingSession || !sessionId}
+                  disabled={!isConnected || isCreatingSession || !sessionId || (sessionId && activeStreams.has(sessionId))}
                   className="w-full p-4 bg-transparent text-gray-900 focus:outline-none placeholder:text-gray-400 resize-none border-0"
                   placeholder={
-                    isStreaming
+                    sessionId && activeStreams.has(sessionId)
                       ? "Claude is thinking..."
                       : !sessionId
                       ? "Select or create a session..."
@@ -437,10 +417,10 @@ export default function Home() {
                 <div className="flex items-center justify-end px-4 pb-3 pt-0">
                   <button
                     type="button"
-                    disabled={isStreaming || !isConnected || !input.trim() || isCreatingSession || !sessionId}
+                    disabled={!isConnected || !input.trim() || isCreatingSession || !sessionId || (sessionId && activeStreams.has(sessionId))}
                     onClick={handleSubmit}
                     className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
-                      !input.trim() || isStreaming || !isConnected || isCreatingSession || !sessionId
+                      !input.trim() || !isConnected || isCreatingSession || !sessionId || (sessionId && activeStreams.has(sessionId))
                         ? "bg-gray-200 text-gray-400 cursor-not-allowed"
                         : "bg-gray-900 text-white hover:bg-gray-800"
                     }`}
