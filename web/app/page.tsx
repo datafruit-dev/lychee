@@ -324,17 +324,33 @@ export default function Home() {
           </div>
         ) : (
           /* Chat View */
-          <div className="max-w-4xl mx-auto w-full h-full flex flex-col p-4">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-6 pt-4">
-              <div className="text-sm text-gray-600">
-                {activeRepo?.name || "Unknown Repo"}
-                {sessionId && ` / ${sessionId}`}
+          <div className="flex-1 flex flex-col">
+            {/* Top Menu Bar */}
+            <div className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="text-sm font-medium text-gray-900">
+                  {activeRepo?.name || "Unknown Repo"}
+                </div>
+                <div className="text-gray-300">/</div>
+                <div className="text-sm text-gray-600">
+                  {sessionId || "No session"}
+                </div>
+              </div>
+              <div>
+                <button
+                  className="px-3 py-1.5 text-xs font-medium bg-gray-900 text-white rounded hover:bg-gray-800 transition-colors"
+                  onClick={() => {
+                    // TODO: Implement checkout
+                    console.log("Checkout clicked");
+                  }}
+                >
+                  Checkout Branch
+                </button>
               </div>
             </div>
 
             {/* Messages area */}
-            <div className="flex-1 overflow-y-auto mb-4 space-y-4 px-2">
+            <div className="flex-1 overflow-y-auto mb-4 space-y-4 px-2 max-w-4xl mx-auto w-full pt-4">
               {messages.length === 0 ? (
                 <div className="text-center text-gray-500 mt-20">
                   <p className="text-lg mb-2">Start chatting with Claude Code</p>
@@ -385,7 +401,7 @@ export default function Home() {
             </div>
 
             {/* Input area */}
-            <div className="pb-4 pt-4">
+            <div className="pb-4 pt-4 max-w-4xl mx-auto w-full">
               <div className="border border-gray-200 rounded-lg bg-white shadow-sm">
                 <div className="overflow-hidden rounded-t-lg">
                   <StatusBar status={null} isStreaming={sessionId ? activeStreams.has(sessionId) : false} />
