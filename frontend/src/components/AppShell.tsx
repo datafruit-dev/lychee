@@ -26,6 +26,21 @@ export default function AppShell({ children }: AppShellProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [hasMounted, setHasMounted] = useState(false);
 
+  const activeRepo = sessions.repos.find((repo) => repo.path === sessions.activeRepoPath) || null;
+  const isStreaming = sessions.currentSessionId
+    ? sessions.activeStreams.has(sessions.currentSessionId)
+    : false;
+
+  const handleCheckout = () => {
+    if (!sessions.activeRepoPath || !sessions.currentSessionId) return;
+    sessions.checkoutBranch(sessions.activeRepoPath, sessions.currentSessionId);
+  };
+
+  const handleRevert = () => {
+    if (!sessions.activeRepoPath || !sessions.currentSessionId) return;
+    sessions.revertCheckout(sessions.activeRepoPath, sessions.currentSessionId);
+  };
+
   useEffect(() => {
     try {
       const stored = localStorage.getItem('lychee-sidebar-collapsed');
@@ -49,7 +64,15 @@ export default function AppShell({ children }: AppShellProps) {
   return (
     <SessionsContext.Provider value={sessions}>
       <div className="flex flex-col h-screen w-screen overflow-hidden bg-background">
-        <TopBar isCollapsed={isCollapsed} onToggleSidebar={toggleSidebar} />
+        <TopBar
+          isCollapsed={isCollapsed}
+          onToggleSidebar={toggleSidebar}
+          activeRepo={activeRepo}
+          currentSessionId={sessions.currentSessionId}
+          isStreaming={isStreaming}
+          onCheckout={handleCheckout}
+          onRevert={handleRevert}
+        />
         <div className="flex flex-1 min-h-0 overflow-hidden">
           <Sidebar
             repos={sessions.repos}
