@@ -16,6 +16,8 @@ export interface Repo {
   name: string;
   path: string;
   sessions: Session[];
+  checked_out_session: string | null;
+  main_dir_uncommitted: boolean;
 }
 
 interface SidebarProps {
