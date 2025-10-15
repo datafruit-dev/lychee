@@ -409,7 +409,7 @@ export default function Home() {
             <div className="flex-1 overflow-y-auto mb-4 space-y-4 px-2 max-w-4xl mx-auto w-full pt-4">
               {messages.length === 0 ? (
                 <div className="text-center text-gray-500 mt-20">
-                  <p className="text-lg mb-2">Start chatting with Claude Code</p>
+                  <p className="text-lg mb-2">Start chatting with Lychee</p>
                   <p className="text-sm">
                     {sessionId
                       ? `Working in branch: ${sessionId}`

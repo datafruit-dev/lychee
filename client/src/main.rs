@@ -782,7 +782,7 @@ async fn list_sessions(repo_path: &str) -> (Vec<SessionInfo>, Option<String>, bo
         SessionInfoFile::default()
     };
 
-    // Scan for session directories
+    // Scan for session directories (worktrees)
     if let Ok(entries) = std::fs::read_dir(&lychee_dir) {
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
@@ -803,6 +803,19 @@ async fn list_sessions(repo_path: &str) -> (Vec<SessionInfo>, Option<String>, bo
                     }
                 }
             }
+        }
+    }
+
+    // Also include sessions that are checked out (no worktree but in metadata)
+    for (session_id, metadata) in &session_metadata.sessions {
+        if !sessions.iter().any(|s| &s.lychee_id == session_id) {
+            // Session exists in metadata but not in worktrees - must be checked out or deleted
+            sessions.push(SessionInfo {
+                lychee_id: session_id.clone(),
+                claude_session_id: metadata.claude_session_id.clone(),
+                created_at: metadata.created_at.clone(),
+                last_active: metadata.last_active.clone(),
+            });
         }
     }
 
