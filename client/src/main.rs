@@ -60,6 +60,7 @@ enum Message {
         repo_path: String,
         lychee_id: String,
         content: String,
+        model: String,
     },
     #[serde(rename = "checkout_branch")]
     CheckoutBranch {
@@ -377,7 +378,7 @@ async fn handle_message(
         }
 
         Message::SendMessage {
-            lychee_id, content, ..
+            lychee_id, content, model, ..
         } => {
             // Check if already running
             {
@@ -423,6 +424,7 @@ async fn handle_message(
             let repo_path_clone = repo_path.to_string();
             let lychee_id_clone = lychee_id.clone();
             let content_clone = content.clone();
+            let model_clone = model.clone();
             let state_clone = state.clone();
 
             tokio::spawn(async move {
@@ -431,6 +433,7 @@ async fn handle_message(
                     &repo_path_clone,
                     &lychee_id_clone,
                     &content_clone,
+                    &model_clone,
                     &state_clone,
                 )
                 .await;
@@ -1135,6 +1138,7 @@ async fn spawn_claude(
     repo_path: &str,
     lychee_id: &str,
     content: &str,
+    model: &str,
     state: &AppState,
 ) {
     let lychee_dir = PathBuf::from(repo_path).join(".lychee");
@@ -1182,6 +1186,8 @@ async fn spawn_claude(
 
     cmd.arg("-p");
     cmd.arg(content);
+    cmd.arg("--model");
+    cmd.arg(model);
     cmd.arg("--output-format");
     cmd.arg("stream-json");
     cmd.arg("--verbose");
@@ -1189,6 +1195,7 @@ async fn spawn_claude(
 
     if state.debug {
         println!("🚀 Spawning Claude for session {}", lychee_id);
+        println!("   Model: {}", model);
         if let Some(ref id) = claude_session_id {
             println!("   Resuming Claude session: {}", id);
         } else {

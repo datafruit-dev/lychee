@@ -48,7 +48,7 @@ type RelayOutboundMessage =
   | { type: "list_sessions"; repo_path: string }
   | { type: "create_session"; repo_path: string }
   | { type: "load_session"; repo_path: string; lychee_id: string }
-  | { type: "send_message"; repo_path: string; lychee_id: string | null; content: string }
+  | { type: "send_message"; repo_path: string; lychee_id: string | null; content: string; model: string }
   | { type: "checkout_branch"; repo_path: string; lychee_id: string }
   | { type: "revert_checkout"; repo_path: string; lychee_id: string };
 
@@ -154,7 +154,7 @@ class SessionsService {
     const trimmed = content.trim();
     if (!trimmed) return;
 
-    const { activeRepoPath, currentSessionId, activeStreams } = this.state;
+    const { activeRepoPath, currentSessionId, activeStreams, selectedModel } = this.state;
     if (!activeRepoPath || !currentSessionId || activeStreams.has(currentSessionId)) {
       return;
     }
@@ -171,6 +171,7 @@ class SessionsService {
       repo_path: activeRepoPath,
       lychee_id: currentSessionId,
       content: trimmed,
+      model: selectedModel,
     });
   };
 
