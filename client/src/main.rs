@@ -1,21 +1,20 @@
 use clap::{Parser, Subcommand};
 use crossterm::{
-    cursor,
+    ExecutableCommand, cursor,
     style::{Color, Print, ResetColor, SetForegroundColor},
     terminal::{self, ClearType},
-    ExecutableCommand,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::{stdout, Write as IoWrite};
+use std::io::{Write as IoWrite, stdout};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use uuid::Uuid;
 
@@ -41,7 +40,10 @@ enum Commands {
 enum Message {
     // Registration
     #[serde(rename = "register_client")]
-    RegisterClient { repo_path: String, repo_name: String },
+    RegisterClient {
+        repo_path: String,
+        repo_name: String,
+    },
 
     // Browser -> Client requests
     #[serde(rename = "list_sessions")]
@@ -49,13 +51,26 @@ enum Message {
     #[serde(rename = "create_session")]
     CreateSession { repo_path: String },
     #[serde(rename = "load_session")]
-    LoadSession { repo_path: String, lychee_id: String },
+    LoadSession {
+        repo_path: String,
+        lychee_id: String,
+    },
     #[serde(rename = "send_message")]
-    SendMessage { repo_path: String, lychee_id: String, content: String },
+    SendMessage {
+        repo_path: String,
+        lychee_id: String,
+        content: String,
+    },
     #[serde(rename = "checkout_branch")]
-    CheckoutBranch { repo_path: String, lychee_id: String },
+    CheckoutBranch {
+        repo_path: String,
+        lychee_id: String,
+    },
     #[serde(rename = "revert_checkout")]
-    RevertCheckout { repo_path: String, lychee_id: String },
+    RevertCheckout {
+        repo_path: String,
+        lychee_id: String,
+    },
 
     // Client -> Browser responses
     #[serde(rename = "sessions_list")]
@@ -88,9 +103,7 @@ enum Message {
         message: String,
     },
     #[serde(rename = "client_count")]
-    ClientCount {
-        count: usize,
-    },
+    ClientCount { count: usize },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,7 +237,8 @@ async fn main() {
 }
 
 async fn run_client(debug: bool) {
-    let relay_url = std::env::var("RELAY_URL").unwrap_or_else(|_| "ws://localhost:3001/ws".to_string());
+    let relay_url =
+        std::env::var("RELAY_URL").unwrap_or_else(|_| "ws://localhost:3001/ws".to_string());
     let repo_path = std::env::current_dir().unwrap().display().to_string();
     let repo_name = std::env::current_dir()
         .unwrap()
@@ -273,7 +287,9 @@ async fn run_client(debug: bool) {
         repo_name: repo_name.clone(),
     };
     write
-        .send(WsMessage::Text(serde_json::to_string(&register_msg).unwrap()))
+        .send(WsMessage::Text(
+            serde_json::to_string(&register_msg).unwrap(),
+        ))
         .await
         .unwrap();
 
@@ -360,7 +376,9 @@ async fn handle_message(
             let _ = tx.send(serde_json::to_string(&response).unwrap());
         }
 
-        Message::SendMessage { lychee_id, content, .. } => {
+        Message::SendMessage {
+            lychee_id, content, ..
+        } => {
             // Check if already running
             {
                 let processes = state.active_processes.read().await;
@@ -408,7 +426,14 @@ async fn handle_message(
             let state_clone = state.clone();
 
             tokio::spawn(async move {
-                spawn_claude(tx_clone, &repo_path_clone, &lychee_id_clone, &content_clone, &state_clone).await;
+                spawn_claude(
+                    tx_clone,
+                    &repo_path_clone,
+                    &lychee_id_clone,
+                    &content_clone,
+                    &state_clone,
+                )
+                .await;
             });
         }
 
@@ -429,7 +454,12 @@ async fn handle_message(
     }
 }
 
-async fn checkout_branch(tx: mpsc::UnboundedSender<String>, repo_path: &str, lychee_id: &str, debug: bool) {
+async fn checkout_branch(
+    tx: mpsc::UnboundedSender<String>,
+    repo_path: &str,
+    lychee_id: &str,
+    debug: bool,
+) {
     let lychee_dir = PathBuf::from(repo_path).join(".lychee");
     let session_dir = lychee_dir.join(lychee_id);
     let session_info_path = lychee_dir.join(".session-info.json");
@@ -448,7 +478,9 @@ async fn checkout_branch(tx: mpsc::UnboundedSender<String>, repo_path: &str, lyc
 
     // Check if another session is already checked out
     // But first verify the stored state matches reality
-    let current_branch = get_current_branch(repo_path).await.unwrap_or_else(|| "main".to_string());
+    let current_branch = get_current_branch(repo_path)
+        .await
+        .unwrap_or_else(|| "main".to_string());
 
     if let Some(stored_checkout) = session_info.checked_out_session.clone() {
         // Verify the stored checkout matches actual git state
@@ -481,14 +513,23 @@ async fn checkout_branch(tx: mpsc::UnboundedSender<String>, repo_path: &str, lyc
             );
         } else if stored_checkout != lychee_id {
             // Another session is legitimately checked out
-            send_error(&tx, &format!("Session {} is already checked out. Revert it first.", stored_checkout));
+            send_error(
+                &tx,
+                &format!(
+                    "Session {} is already checked out. Revert it first.",
+                    stored_checkout
+                ),
+            );
             return;
         }
     }
 
     // Check main directory for uncommitted changes
     if has_uncommitted_changes(repo_path).await {
-        send_error(&tx, "Main directory has uncommitted changes. Commit them first.");
+        send_error(
+            &tx,
+            "Main directory has uncommitted changes. Commit them first.",
+        );
         return;
     }
 
@@ -510,12 +551,24 @@ async fn checkout_branch(tx: mpsc::UnboundedSender<String>, repo_path: &str, lyc
 
     if debug {
         if let Ok(out) = &add_output {
-            println!("   git add output: {}", String::from_utf8_lossy(&out.stderr));
+            println!(
+                "   git add output: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
     }
 
     let commit_output = Command::new("git")
-        .args(&["commit", "-m", &format!("Lychee checkpoint: {} at {}", lychee_id, chrono::Utc::now().to_rfc3339()), "--allow-empty"])
+        .args(&[
+            "commit",
+            "-m",
+            &format!(
+                "Lychee checkpoint: {} at {}",
+                lychee_id,
+                chrono::Utc::now().to_rfc3339()
+            ),
+            "--allow-empty",
+        ])
         .current_dir(&session_dir)
         .output()
         .await;
@@ -528,14 +581,25 @@ async fn checkout_branch(tx: mpsc::UnboundedSender<String>, repo_path: &str, lyc
 
     // Remove worktree
     let output = Command::new("git")
-        .args(&["worktree", "remove", &session_dir.display().to_string(), "--force"])
+        .args(&[
+            "worktree",
+            "remove",
+            &session_dir.display().to_string(),
+            "--force",
+        ])
         .current_dir(repo_path)
         .output()
         .await;
 
     if let Ok(out) = output {
         if !out.status.success() {
-            send_error(&tx, &format!("Failed to remove worktree: {}", String::from_utf8_lossy(&out.stderr)));
+            send_error(
+                &tx,
+                &format!(
+                    "Failed to remove worktree: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                ),
+            );
             return;
         }
     }
@@ -549,7 +613,13 @@ async fn checkout_branch(tx: mpsc::UnboundedSender<String>, repo_path: &str, lyc
 
     if let Ok(out) = output {
         if !out.status.success() {
-            send_error(&tx, &format!("Failed to checkout branch: {}", String::from_utf8_lossy(&out.stderr)));
+            send_error(
+                &tx,
+                &format!(
+                    "Failed to checkout branch: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                ),
+            );
             return;
         }
     }
@@ -568,7 +638,10 @@ async fn checkout_branch(tx: mpsc::UnboundedSender<String>, repo_path: &str, lyc
     if debug {
         if let Ok(out) = &reset_output {
             if !out.status.success() {
-                println!("   git reset error: {}", String::from_utf8_lossy(&out.stderr));
+                println!(
+                    "   git reset error: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
             } else {
                 println!("   Reset successful - changes are now uncommitted");
             }
@@ -601,7 +674,12 @@ async fn checkout_branch(tx: mpsc::UnboundedSender<String>, repo_path: &str, lyc
     let _ = tx.send(serde_json::to_string(&update_msg).unwrap());
 }
 
-async fn revert_checkout(tx: mpsc::UnboundedSender<String>, repo_path: &str, lychee_id: &str, debug: bool) {
+async fn revert_checkout(
+    tx: mpsc::UnboundedSender<String>,
+    repo_path: &str,
+    lychee_id: &str,
+    debug: bool,
+) {
     let lychee_dir = PathBuf::from(repo_path).join(".lychee");
     let session_dir = lychee_dir.join(lychee_id);
     let session_info_path = lychee_dir.join(".session-info.json");
@@ -625,7 +703,9 @@ async fn revert_checkout(tx: mpsc::UnboundedSender<String>, repo_path: &str, lyc
     }
 
     // Get original branch
-    let original_branch = session_info.sessions.get(lychee_id)
+    let original_branch = session_info
+        .sessions
+        .get(lychee_id)
         .and_then(|m| m.original_branch.clone())
         .unwrap_or_else(|| "main".to_string());
 
@@ -642,7 +722,16 @@ async fn revert_checkout(tx: mpsc::UnboundedSender<String>, repo_path: &str, lyc
         .await;
 
     let _ = Command::new("git")
-        .args(&["commit", "-m", &format!("Lychee checkpoint: {} at {}", lychee_id, chrono::Utc::now().to_rfc3339()), "--allow-empty"])
+        .args(&[
+            "commit",
+            "-m",
+            &format!(
+                "Lychee checkpoint: {} at {}",
+                lychee_id,
+                chrono::Utc::now().to_rfc3339()
+            ),
+            "--allow-empty",
+        ])
         .current_dir(repo_path)
         .output()
         .await;
@@ -656,21 +745,39 @@ async fn revert_checkout(tx: mpsc::UnboundedSender<String>, repo_path: &str, lyc
 
     if let Ok(out) = output {
         if !out.status.success() {
-            send_error(&tx, &format!("Failed to checkout {}: {}", original_branch, String::from_utf8_lossy(&out.stderr)));
+            send_error(
+                &tx,
+                &format!(
+                    "Failed to checkout {}: {}",
+                    original_branch,
+                    String::from_utf8_lossy(&out.stderr)
+                ),
+            );
             return;
         }
     }
 
     // Recreate worktree
     let output = Command::new("git")
-        .args(&["worktree", "add", &session_dir.display().to_string(), lychee_id])
+        .args(&[
+            "worktree",
+            "add",
+            &session_dir.display().to_string(),
+            lychee_id,
+        ])
         .current_dir(repo_path)
         .output()
         .await;
 
     if let Ok(out) = output {
         if !out.status.success() {
-            send_error(&tx, &format!("Failed to recreate worktree: {}", String::from_utf8_lossy(&out.stderr)));
+            send_error(
+                &tx,
+                &format!(
+                    "Failed to recreate worktree: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                ),
+            );
             return;
         }
     }
@@ -729,7 +836,9 @@ async fn get_current_branch(repo_path: &str) -> Option<String> {
         .ok()
         .and_then(|output| {
             if output.status.success() {
-                String::from_utf8(output.stdout).ok().map(|s| s.trim().to_string())
+                String::from_utf8(output.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
             } else {
                 None
             }
@@ -745,13 +854,18 @@ fn send_error(tx: &mpsc::UnboundedSender<String>, message: &str) {
 }
 
 fn ensure_lychee_ignored(repo_path: &str) {
-    let exclude_path = PathBuf::from(repo_path).join(".git").join("info").join("exclude");
+    let exclude_path = PathBuf::from(repo_path)
+        .join(".git")
+        .join("info")
+        .join("exclude");
 
     // Read existing exclude file
     let content = std::fs::read_to_string(&exclude_path).unwrap_or_else(|_| String::new());
 
     // Check if .lychee is already excluded
-    if content.lines().any(|line| line.trim() == "/.lychee" || line.trim() == ".lychee" || line.trim() == "/.lychee/") {
+    if content.lines().any(|line| {
+        line.trim() == "/.lychee" || line.trim() == ".lychee" || line.trim() == "/.lychee/"
+    }) {
         return;
     }
 
@@ -833,11 +947,18 @@ async fn list_sessions(repo_path: &str) -> (Vec<SessionInfo>, Option<String>, bo
         .map(|output| !output.stdout.is_empty())
         .unwrap_or(false);
 
-    (sessions, session_metadata.checked_out_session, main_dir_uncommitted)
+    (
+        sessions,
+        session_metadata.checked_out_session,
+        main_dir_uncommitted,
+    )
 }
 
 async fn create_session(repo_path: &str, debug: bool) -> Option<String> {
-    let lychee_id = format!("session-{}", Uuid::new_v4().to_string().split('-').next().unwrap());
+    let lychee_id = format!(
+        "session-{}",
+        Uuid::new_v4().to_string().split('-').next().unwrap()
+    );
     let lychee_dir = PathBuf::from(repo_path).join(".lychee");
     let session_dir = lychee_dir.join(&lychee_id);
 
@@ -858,7 +979,10 @@ async fn create_session(repo_path: &str, debug: bool) -> Option<String> {
 
     if !output.status.success() {
         if debug {
-            eprintln!("❌ Failed to create worktree: {}", String::from_utf8_lossy(&output.stderr));
+            eprintln!(
+                "❌ Failed to create worktree: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
         return None;
     }
@@ -887,7 +1011,8 @@ async fn create_session(repo_path: &str, debug: bool) -> Option<String> {
     std::fs::write(
         session_info_path,
         serde_json::to_string_pretty(&session_info).unwrap(),
-    ).ok()?;
+    )
+    .ok()?;
 
     if debug {
         println!("✅ Created session: {}", lychee_id);
@@ -949,7 +1074,7 @@ async fn load_session_history(repo_path: &str, lychee_id: &str, debug: bool) -> 
             // Replace slashes with dashes, and handle the .lychee part
             let sanitized = path_str
                 .trim_start_matches('/')
-                .replace("/.", "/-.")  // Preserve dots after slashes
+                .replace("/.", "/-.") // Preserve dots after slashes
                 .replace('/', "-");
             let sanitized_path = format!("-{}", sanitized);
 
@@ -986,7 +1111,11 @@ async fn load_session_history(repo_path: &str, lychee_id: &str, debug: bool) -> 
                 }
 
                 if debug {
-                    println!("📖 Loaded {} messages for session {}", messages.len(), lychee_id);
+                    println!(
+                        "📖 Loaded {} messages for session {}",
+                        messages.len(),
+                        lychee_id
+                    );
                     println!("   Messages: {:?}", messages);
                 }
 
@@ -1055,6 +1184,7 @@ async fn spawn_claude(
     cmd.arg(content);
     cmd.arg("--output-format");
     cmd.arg("stream-json");
+    cmd.arg("--verbose");
     cmd.arg("--dangerously-skip-permissions");
 
     if state.debug {
@@ -1110,8 +1240,9 @@ async fn spawn_claude(
 
         if let Ok(data) = serde_json::from_str::<Value>(&line) {
             // Extract session ID from system or init message
-            if data.get("type") == Some(&serde_json::json!("system")) ||
-               data.get("type") == Some(&serde_json::json!("init")) {
+            if data.get("type") == Some(&serde_json::json!("system"))
+                || data.get("type") == Some(&serde_json::json!("init"))
+            {
                 if let Some(session_id) = data.get("session_id").and_then(|v| v.as_str()) {
                     new_claude_id = Some(session_id.to_string());
                     if state.debug {
@@ -1206,7 +1337,12 @@ async fn render_tui(state: &Arc<AppState>) {
     };
 
     let uptime = state.start_time.elapsed().as_secs();
-    let uptime_str = format!("{}:{:02}:{:02}", uptime / 3600, (uptime / 60) % 60, uptime % 60);
+    let uptime_str = format!(
+        "{}:{:02}:{:02}",
+        uptime / 3600,
+        (uptime / 60) % 60,
+        uptime % 60
+    );
     let repo_path = std::env::current_dir().unwrap().display().to_string();
     let repo_name = std::env::current_dir()
         .unwrap()
@@ -1230,7 +1366,9 @@ async fn render_tui(state: &Arc<AppState>) {
     stdout.execute(ResetColor).ok();
 
     stdout.execute(SetForegroundColor(Color::DarkGrey)).ok();
-    stdout.execute(Print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")).ok();
+    stdout
+        .execute(Print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"))
+        .ok();
     stdout.execute(ResetColor).ok();
 
     stdout.execute(Print("\n")).ok();
@@ -1257,9 +1395,13 @@ async fn render_tui(state: &Arc<AppState>) {
 
     if is_active {
         stdout.execute(SetForegroundColor(Color::Green)).ok();
-        stdout.execute(Print(format!("● Active ({} session{})\n",
-            processes.len(),
-            if processes.len() == 1 { "" } else { "s" }))).ok();
+        stdout
+            .execute(Print(format!(
+                "● Active ({} session{})\n",
+                processes.len(),
+                if processes.len() == 1 { "" } else { "s" }
+            )))
+            .ok();
     } else {
         stdout.execute(SetForegroundColor(Color::Yellow)).ok();
         stdout.execute(Print("● Waiting for messages\n")).ok();
@@ -1282,7 +1424,12 @@ async fn render_tui(state: &Arc<AppState>) {
     stdout.execute(Print("  Clients:    ")).ok();
     stdout.execute(ResetColor).ok();
     stdout.execute(SetForegroundColor(Color::Cyan)).ok();
-    stdout.execute(Print(format!("{} connected on this machine\n", *client_count))).ok();
+    stdout
+        .execute(Print(format!(
+            "{} connected on this machine\n",
+            *client_count
+        )))
+        .ok();
     stdout.execute(ResetColor).ok();
 
     stdout.execute(Print("\n")).ok();
