@@ -12,6 +12,10 @@ interface TopBarProps {
   activeRepo: RepoInfo | null;
   currentSessionId: string | null;
   isStreaming: boolean;
+  isRightSidebarOpen: boolean;
+  onToggleRightSidebar: () => void;
+  rightSidebarWidth: number;
+  isResizingRightSidebar: boolean;
 }
 
 export default function TopBar({
@@ -20,6 +24,10 @@ export default function TopBar({
   activeRepo,
   currentSessionId,
   isStreaming,
+  isRightSidebarOpen,
+  onToggleRightSidebar,
+  rightSidebarWidth,
+  isResizingRightSidebar,
 }: TopBarProps) {
   const [isPanelOpen, setIsPanelOpen] = useState(false);
 
@@ -130,7 +138,25 @@ export default function TopBar({
             branchOrigin="origin/main"
           />
         )}
+
+        {/* Temporary toggle button */}
+        <button
+          onClick={onToggleRightSidebar}
+          className="px-3 py-1.5 text-xs font-medium rounded-md transition-colors bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent border border-border"
+          title={isRightSidebarOpen ? "Close tool calls" : "Open tool calls"}
+        >
+          Tool Calls
+        </button>
       </div>
+
+      {/* Right sidebar section of top bar */}
+      <div
+        className="flex-shrink-0 h-12 bg-sidebar border-l border-b border-border overflow-hidden"
+        style={{
+          width: isRightSidebarOpen ? `${rightSidebarWidth}px` : '0px',
+          transition: isResizingRightSidebar ? 'none' : 'all 150ms ease-out',
+        }}
+      />
     </div>
   );
 }

@@ -2,6 +2,7 @@
 
 import { ReactNode, useState, useEffect, useMemo, createContext, useContext } from "react";
 import Sidebar from "./Sidebar";
+import RightSidebar from "./RightSidebar";
 import TopBar from "./TopBar";
 import { useSessions } from "@/lib/sessions";
 
@@ -24,6 +25,9 @@ export function useSessionsContext() {
 export default function AppShell({ children }: AppShellProps) {
   const sessions = useSessions();
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(288); // Default 288px (w-72)
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
   const [hasMounted, setHasMounted] = useState(false);
 
   const activeRepo = sessions.repos.find((repo) => repo.path === sessions.activeRepoPath) || null;
@@ -51,6 +55,7 @@ export default function AppShell({ children }: AppShellProps) {
   }, [isCollapsed, hasMounted]);
 
   const toggleSidebar = () => setIsCollapsed(!isCollapsed);
+  const toggleRightSidebar = () => setIsRightSidebarOpen(!isRightSidebarOpen);
 
   return (
     <SessionsContext.Provider value={sessions}>
@@ -61,6 +66,10 @@ export default function AppShell({ children }: AppShellProps) {
           activeRepo={activeRepo}
           currentSessionId={sessions.currentSessionId}
           isStreaming={isStreaming}
+          isRightSidebarOpen={isRightSidebarOpen}
+          onToggleRightSidebar={toggleRightSidebar}
+          rightSidebarWidth={rightSidebarWidth}
+          isResizingRightSidebar={isResizingRightSidebar}
         />
         <div className="flex flex-1 min-h-0 overflow-hidden">
           <Sidebar
@@ -77,6 +86,13 @@ export default function AppShell({ children }: AppShellProps) {
           <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
             {children}
           </div>
+          <RightSidebar
+            isOpen={isRightSidebarOpen}
+            onToggle={toggleRightSidebar}
+            width={rightSidebarWidth}
+            onWidthChange={setRightSidebarWidth}
+            onResizingChange={setIsResizingRightSidebar}
+          />
         </div>
       </div>
     </SessionsContext.Provider>
