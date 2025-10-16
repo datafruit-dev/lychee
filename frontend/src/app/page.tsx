@@ -71,7 +71,6 @@ export default function Home() {
         <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-6 py-8 pb-40">
           {sessions.messages.length === 0 ? (
             <div className="mt-24 text-center text-muted-foreground">
-              <p className="mb-2 text-lg">Select or create a branch to start chatting.</p>
               {!activeRepo && sessions.repos.length === 0 && (
                 <p className="text-sm">Run `lychee up` in a repository to connect.</p>
               )}

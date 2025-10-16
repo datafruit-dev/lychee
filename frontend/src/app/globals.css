@@ -205,6 +205,38 @@
   }
 }
 
+/* Simple fade animation for dropdown */
+@keyframes simpleFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-fade-in {
+  animation: simpleFadeIn 0.3s ease-in-out;
+}
+
+/* Session panel animations */
+.session-info-panel {
+  animation: panelFadeIn 0.2s ease-out;
+}
+
+@keyframes panelFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.session-panel-container {
+  position: relative;
+}
+
 @keyframes fadeOut {
   from {
     opacity: 1;

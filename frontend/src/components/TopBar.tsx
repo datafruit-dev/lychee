@@ -1,7 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import Image from "next/image";
+import { ChevronDown } from "lucide-react";
 import type { RepoInfo } from "@/lib/sessions";
+import SessionInfoPanel from "./SessionInfoPanel";
 
 interface TopBarProps {
   isCollapsed: boolean;
@@ -18,11 +21,13 @@ export default function TopBar({
   currentSessionId,
   isStreaming,
 }: TopBarProps) {
+  const [isPanelOpen, setIsPanelOpen] = useState(false);
+
   return (
-    <div className="flex-shrink-0 flex items-center h-12 bg-sidebar">
-      {/* Sidebar section of top bar */}
+    <div className="flex-shrink-0 flex h-12">
+      {/* Sidebar section - fixed height */}
       <div
-        className={`flex-shrink-0 transition-all duration-150 ease-out h-12 ${
+        className={`flex-shrink-0 h-12 bg-sidebar transition-all duration-150 ease-out ${
           isCollapsed ? "w-12" : "w-72"
         } flex items-center ${isCollapsed ? "justify-start" : "justify-between"} px-1.5 border-r border-b border-border`}
       >
@@ -87,19 +92,43 @@ export default function TopBar({
         )}
       </div>
 
-      {/* Main content section of top bar */}
-      <div className="flex-1 h-12 flex items-center justify-between px-4 bg-background border-b border-border">
-        {/* Session Info */}
-        {activeRepo && currentSessionId ? (
-          <div className="flex items-center gap-3 text-sm">
-            <div className="font-medium text-foreground">{activeRepo.name}</div>
-            <div className="text-muted-foreground">/</div>
-            <div className="text-muted-foreground">{currentSessionId}</div>
-          </div>
-        ) : (
-          <div className="text-sm text-muted-foreground">
-            {activeRepo ? "Select a branch" : "No repository selected"}
-          </div>
+      {/* Main content area */}
+      <div className="flex-1 flex flex-col bg-background">
+        <div className="h-12 flex items-center justify-between px-4 border-b border-border">
+          {activeRepo && currentSessionId ? (
+            <div className="flex items-center gap-3 text-sm">
+              {!isPanelOpen && (
+                <>
+                  <div className="font-medium text-foreground">{activeRepo.name}</div>
+                  <div className="text-muted-foreground">/</div>
+                  <div className="text-muted-foreground">{currentSessionId}</div>
+                  <button
+                    data-dropdown-trigger
+                    onClick={() => setIsPanelOpen(true)}
+                    className="ml-1 p-1 rounded hover:bg-muted transition-colors"
+                    aria-label="Show session info"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+                  </button>
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground">
+              {activeRepo ? "Select a branch" : "No repository selected"}
+            </div>
+          )}
+        </div>
+
+        {/* Session info panel - only in main content area */}
+        {activeRepo && currentSessionId && (
+          <SessionInfoPanel
+            isOpen={isPanelOpen}
+            onClose={() => setIsPanelOpen(false)}
+            repoName={activeRepo.name}
+            sessionId={currentSessionId}
+            branchOrigin="origin/main"
+          />
         )}
       </div>
     </div>
