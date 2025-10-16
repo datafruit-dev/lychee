@@ -33,18 +33,12 @@ enum Message {
     LoadSession { repo_path: String, lychee_id: String },
     #[serde(rename = "send_message")]
     SendMessage { repo_path: String, lychee_id: String, content: String },
-    #[serde(rename = "checkout_branch")]
-    CheckoutBranch { repo_path: String, lychee_id: String },
-    #[serde(rename = "revert_checkout")]
-    RevertCheckout { repo_path: String, lychee_id: String },
 
     // Client -> Browser (via relay)
     #[serde(rename = "sessions_list")]
     SessionsList {
         repo_path: String,
-        sessions: Vec<SessionInfo>,
-        checked_out_session: Option<String>,
-        main_dir_uncommitted: bool,
+        sessions: Vec<SessionInfo>
     },
     #[serde(rename = "client_count")]
     ClientCount {
@@ -296,9 +290,7 @@ async fn handle_browser(
                     Message::ListSessions { repo_path } |
                     Message::CreateSession { repo_path } |
                     Message::LoadSession { repo_path, .. } |
-                    Message::SendMessage { repo_path, .. } |
-                    Message::CheckoutBranch { repo_path, .. } |
-                    Message::RevertCheckout { repo_path, .. } => Some(repo_path.clone()),
+                    Message::SendMessage { repo_path, .. } => Some(repo_path.clone()),
                     _ => None,
                 };
 

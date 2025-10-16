@@ -77,9 +77,7 @@ export default function Home() {
             const newRepo: Repo = {
               name: message.repo_name,
               path: message.repo_path,
-              sessions: [],
-              checked_out_session: null,
-              main_dir_uncommitted: false,
+              sessions: []
             };
             return [...prev, newRepo];
           });
@@ -105,12 +103,7 @@ export default function Home() {
           setRepos((prev) =>
             prev.map((r) =>
               r.path === message.repo_path
-                ? {
-                    ...r,
-                    sessions: message.sessions || [],
-                    checked_out_session: message.checked_out_session,
-                    main_dir_uncommitted: message.main_dir_uncommitted,
-                  }
+                ? { ...r, sessions: message.sessions || [] }
                 : r
             )
           );
@@ -331,85 +324,20 @@ export default function Home() {
           </div>
         ) : (
           /* Chat View */
-          <div className="flex-1 flex flex-col">
-            {/* Top Menu Bar */}
-            <div className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="text-sm font-medium text-gray-900">
-                  {activeRepo?.name || "Unknown Repo"}
-                </div>
-                <div className="text-gray-300">/</div>
-                <div className="text-sm text-gray-600">
-                  {sessionId || "No session"}
-                </div>
-              </div>
-              <div>
-                {sessionId && activeRepo && (() => {
-                  const isCheckedOut = activeRepo.checked_out_session === sessionId;
-                  const hasUncommitted = activeRepo.main_dir_uncommitted;
-                  const isStreaming = sessionId && activeStreams.has(sessionId);
-                  const isDisabled = hasUncommitted || isStreaming;
-
-                  const handleCheckout = () => {
-                    if (!activeRepoPath || !sessionId) return;
-
-                    // TODO: Show confirmation modal
-                    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                      const msgType = isCheckedOut ? "revert_checkout" : "checkout_branch";
-                      wsRef.current.send(JSON.stringify({
-                        type: msgType,
-                        repo_path: activeRepoPath,
-                        lychee_id: sessionId,
-                      }));
-                    }
-                  };
-
-                  const buttonText = isCheckedOut ? "Revert" : "Checkout";
-
-                  const getTooltip = () => {
-                    if (hasUncommitted) {
-                      return isCheckedOut
-                        ? "Commit your changes in the main directory before reverting"
-                        : "Commit your changes in the main directory before checking out";
-                    }
-                    if (isStreaming) {
-                      return "Wait for Claude to finish before changing branches";
-                    }
-                    if (isCheckedOut) {
-                      return "Revert to restore the worktree and switch back to your original branch";
-                    }
-                    return "Checkout this branch to your main directory for testing. Auto-commits any changes in the worktree. ⚠️ Files in .gitignore will be lost.";
-                  };
-
-                  return (
-                    <div className="relative group">
-                      <button
-                        className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
-                          isDisabled
-                            ? "bg-gray-200 text-gray-500 cursor-not-allowed"
-                            : "bg-gray-900 text-white hover:bg-gray-800"
-                        }`}
-                        onClick={handleCheckout}
-                        disabled={isDisabled}
-                      >
-                        {buttonText}
-                      </button>
-                      {isDisabled && (
-                        <div className="absolute right-0 top-full mt-2 w-64 bg-gray-900 text-white text-xs rounded p-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                          {getTooltip()}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
+          <div className="max-w-4xl mx-auto w-full h-full flex flex-col p-4">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-6 pt-4">
+              <div className="text-sm text-gray-600">
+                {activeRepo?.name || "Unknown Repo"}
+                {sessionId && ` / ${sessionId}`}
               </div>
             </div>
 
             {/* Messages area */}
-            <div className="flex-1 overflow-y-auto mb-4 space-y-4 px-2 max-w-4xl mx-auto w-full pt-4">
+            <div className="flex-1 overflow-y-auto mb-4 space-y-4 px-2">
               {messages.length === 0 ? (
                 <div className="text-center text-gray-500 mt-20">
-                  <p className="text-lg mb-2">Start chatting with Lychee</p>
+                  <p className="text-lg mb-2">Start chatting with Claude Code</p>
                   <p className="text-sm">
                     {sessionId
                       ? `Working in branch: ${sessionId}`
@@ -457,7 +385,7 @@ export default function Home() {
             </div>
 
             {/* Input area */}
-            <div className="pb-4 pt-4 max-w-4xl mx-auto w-full">
+            <div className="pb-4 pt-4">
               <div className="border border-gray-200 rounded-lg bg-white shadow-sm">
                 <div className="overflow-hidden rounded-t-lg">
                   <StatusBar status={null} isStreaming={sessionId ? activeStreams.has(sessionId) : false} />
