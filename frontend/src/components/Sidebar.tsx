@@ -74,7 +74,7 @@ export default function Sidebar({
   };
 
   return (
-    <aside className={`flex-shrink-0 bg-sidebar flex flex-col border-r border-sidebar-border overflow-hidden transition-all duration-150 ease-out ${
+    <aside className={`flex-shrink-0 bg-sidebar flex flex-col border-r border-border overflow-hidden transition-all duration-150 ease-out ${
       isCollapsed ? 'w-12' : 'w-72'
     }`}>
 

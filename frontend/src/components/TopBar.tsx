@@ -41,11 +41,11 @@ export default function TopBar({
     return "Checkout this branch to your main directory for testing. Auto-commits any changes in the worktree. ⚠️ Files in .gitignore will be lost.";
   };
   return (
-    <div className="flex-shrink-0 flex items-center h-12 border-b border-sidebar-border bg-sidebar">
+    <div className="flex-shrink-0 flex items-center h-12 bg-sidebar">
       {/* Sidebar section of top bar */}
       <div className={`flex-shrink-0 transition-all duration-150 ease-out h-12 ${
         isCollapsed ? 'w-12' : 'w-72'
-      } flex items-center ${isCollapsed ? 'justify-start' : 'justify-between'} px-1.5 border-r border-sidebar-border`}>
+      } flex items-center ${isCollapsed ? 'justify-start' : 'justify-between'} px-1.5 border-r border-b border-border`}>
         {isCollapsed ? (
           <button
             onClick={onToggleSidebar}
@@ -108,7 +108,7 @@ export default function TopBar({
       </div>
 
       {/* Main content section of top bar */}
-      <div className="flex-1 h-12 flex items-center justify-between px-4 bg-background">
+      <div className="flex-1 h-12 flex items-center justify-between px-4 bg-background border-b border-border">
         {/* Session Info */}
         {activeRepo && currentSessionId ? (
           <div className="flex items-center gap-3 text-sm">
