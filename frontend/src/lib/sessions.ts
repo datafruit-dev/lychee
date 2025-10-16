@@ -73,7 +73,7 @@ const INITIAL_STATE: SessionsState = {
   messages: [],
   activeStreams: new Set(),
   connectionStatus: "idle",
-  selectedModel: "claude-sonnet-4-20250514",
+  selectedModel: "claude-sonnet-4-5-20250929",
 };
 
 type Listener = () => void;
