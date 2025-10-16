@@ -74,18 +74,18 @@ export default function Sidebar({
   };
 
   return (
-    <aside className={`flex-shrink-0 bg-sidebar flex flex-col border-r border-sidebar-border overflow-hidden transition-all duration-150 ease-out ${
+    <aside className={`flex-shrink-0 bg-sidebar flex flex-col border-r border-border overflow-hidden transition-all duration-150 ease-out ${
       isCollapsed ? 'w-12' : 'w-72'
     }`}>
 
       {/* Repos and Sessions */}
-      <div className="flex-1 overflow-y-auto pb-2 px-1.5 min-h-0">
+      <div className="flex-1 overflow-y-auto pb-2 px-1.5 pt-1.5 min-h-0">
         {repos.length === 0 ? (
           !isCollapsed && (
             <div className="text-center py-8 px-4">
               <p className="text-sm text-sidebar-foreground/70">No repositories connected</p>
               <p className="text-xs text-sidebar-foreground/50 mt-1">
-                Run <code className="bg-sidebar-accent px-1 rounded">lychee up</code>
+                Run <code className="bg-sidebar-accent px-1 rounded-sm">lychee up</code>
               </p>
             </div>
           )
@@ -101,9 +101,7 @@ export default function Sidebar({
                   {/* Repo Header */}
                   <button
                     onClick={() => toggleRepo(repo.path)}
-                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer group text-left ${
-                      isActive ? 'bg-sidebar-accent' : 'hover:bg-sidebar-accent'
-                    }`}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-sm cursor-pointer group text-left hover:bg-sidebar-accent"
                   >
                     {isExpanded ? (
                       <ChevronDown className="w-3.5 h-3.5 text-sidebar-foreground/50 flex-shrink-0" />
@@ -127,7 +125,7 @@ export default function Sidebar({
                       <button
                         onClick={() => onNewSession(repo.path)}
                         disabled={isCreating}
-                        className={`w-full group flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors text-left ${
+                        className={`w-full group flex items-center gap-2 px-2 py-1.5 rounded-sm cursor-pointer transition-colors text-left ${
                           isCreating
                             ? "text-sidebar-foreground/40"
                             : "hover:bg-sidebar-accent text-sidebar-foreground/60 hover:text-sidebar-foreground"
@@ -150,9 +148,9 @@ export default function Sidebar({
                             <button
                               key={session.lychee_id}
                               onClick={() => onSelectSession(repo.path, session.lychee_id)}
-                              className={`w-full group flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors text-left ${
+                              className={`w-full group flex items-start gap-2 px-2 py-1.5 rounded-sm cursor-pointer transition-colors text-left ${
                                 isActiveSession
-                                  ? "bg-sidebar-primary/10 text-sidebar-foreground"
+                                  ? "bg-sidebar-accent text-sidebar-foreground"
                                   : "hover:bg-sidebar-accent text-sidebar-foreground/70 hover:text-sidebar-foreground"
                               }`}
                             >

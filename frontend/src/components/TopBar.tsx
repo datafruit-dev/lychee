@@ -19,15 +19,17 @@ export default function TopBar({
   isStreaming,
 }: TopBarProps) {
   return (
-    <div className="flex-shrink-0 flex items-center h-12 border-b border-sidebar-border bg-sidebar">
+    <div className="flex-shrink-0 flex items-center h-12 bg-sidebar">
       {/* Sidebar section of top bar */}
-      <div className={`flex-shrink-0 transition-all duration-150 ease-out h-12 ${
-        isCollapsed ? 'w-12' : 'w-72'
-      } flex items-center ${isCollapsed ? 'justify-start' : 'justify-between'} px-1.5 border-r border-sidebar-border`}>
+      <div
+        className={`flex-shrink-0 transition-all duration-150 ease-out h-12 ${
+          isCollapsed ? "w-12" : "w-72"
+        } flex items-center ${isCollapsed ? "justify-start" : "justify-between"} px-1.5 border-r border-b border-border`}
+      >
         {isCollapsed ? (
           <button
             onClick={onToggleSidebar}
-            className="group w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center rounded text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent focus:outline-none"
+            className="group w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent focus:outline-none"
             title="Expand sidebar"
           >
             <Image
@@ -64,7 +66,7 @@ export default function TopBar({
             </div>
             <button
               onClick={onToggleSidebar}
-              className="w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center rounded text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent focus:outline-none"
+              className="w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent focus:outline-none"
               title="Collapse sidebar"
             >
               <svg
@@ -86,17 +88,13 @@ export default function TopBar({
       </div>
 
       {/* Main content section of top bar */}
-      <div className="flex-1 h-12 flex items-center justify-between px-4 bg-background">
+      <div className="flex-1 h-12 flex items-center justify-between px-4 bg-background border-b border-border">
         {/* Session Info */}
         {activeRepo && currentSessionId ? (
           <div className="flex items-center gap-3 text-sm">
-            <div className="font-medium text-foreground">
-              {activeRepo.name}
-            </div>
+            <div className="font-medium text-foreground">{activeRepo.name}</div>
             <div className="text-muted-foreground">/</div>
-            <div className="text-muted-foreground">
-              {currentSessionId}
-            </div>
+            <div className="text-muted-foreground">{currentSessionId}</div>
           </div>
         ) : (
           <div className="text-sm text-muted-foreground">
