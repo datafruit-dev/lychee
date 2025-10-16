@@ -51,7 +51,12 @@ enum Message {
     #[serde(rename = "load_session")]
     LoadSession { repo_path: String, lychee_id: String },
     #[serde(rename = "send_message")]
-    SendMessage { repo_path: String, lychee_id: String, content: String },
+    SendMessage {
+        repo_path: String,
+        lychee_id: String,
+        content: String,
+        model: String,
+    },
 
     // Client -> Browser responses
     #[serde(rename = "sessions_list")]
@@ -345,7 +350,9 @@ async fn handle_message(
             let _ = tx.send(serde_json::to_string(&response).unwrap());
         }
 
-        Message::SendMessage { lychee_id, content, .. } => {
+        Message::SendMessage {
+            lychee_id, content, model, ..
+        } => {
             // Check if already running
             {
                 let processes = state.active_processes.read().await;
@@ -388,10 +395,19 @@ async fn handle_message(
             let repo_path_clone = repo_path.to_string();
             let lychee_id_clone = lychee_id.clone();
             let content_clone = content.clone();
+            let model_clone = model.clone();
             let state_clone = state.clone();
 
             tokio::spawn(async move {
-                spawn_claude(tx_clone, &repo_path_clone, &lychee_id_clone, &content_clone, &state_clone).await;
+                spawn_claude(
+                    tx_clone,
+                    &repo_path_clone,
+                    &lychee_id_clone,
+                    &content_clone,
+                    &model_clone,
+                    &state_clone,
+                )
+                .await;
             });
         }
 
@@ -626,6 +642,7 @@ async fn spawn_claude(
     repo_path: &str,
     lychee_id: &str,
     content: &str,
+    model: &str,
     state: &AppState,
 ) {
     let lychee_dir = PathBuf::from(repo_path).join(".lychee");
@@ -658,11 +675,14 @@ async fn spawn_claude(
 
     cmd.arg("-p");
     cmd.arg(content);
+    cmd.arg("--model");
+    cmd.arg(model);
     cmd.arg("--output-format");
     cmd.arg("stream-json");
 
     if state.debug {
         println!("🚀 Spawning Claude for session {}", lychee_id);
+        println!("   Model: {}", model);
         if let Some(ref id) = claude_session_id {
             println!("   Resuming Claude session: {}", id);
         } else {

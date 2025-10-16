@@ -27,6 +27,8 @@ export interface RepoInfo {
   name: string;
   path: string;
   sessions: SessionInfo[];
+  checked_out_session: string | null;
+  main_dir_uncommitted: boolean;
 }
 
 type ConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error";
@@ -34,7 +36,7 @@ type ConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error";
 type RelayInboundMessage =
   | { type: "client_connected"; repo_path: string; repo_name: string }
   | { type: "client_disconnected"; repo_path: string }
-  | { type: "sessions_list"; repo_path: string; sessions?: SessionInfo[] }
+  | { type: "sessions_list"; repo_path: string; sessions?: SessionInfo[]; checked_out_session?: string | null; main_dir_uncommitted?: boolean }
   | { type: "session_created"; repo_path: string; lychee_id: string }
   | { type: "session_history"; repo_path: string; lychee_id: string; messages?: ChatMessage[] }
   | { type: "claude_stream"; repo_path: string; lychee_id: string; data: any }
@@ -46,7 +48,9 @@ type RelayOutboundMessage =
   | { type: "list_sessions"; repo_path: string }
   | { type: "create_session"; repo_path: string }
   | { type: "load_session"; repo_path: string; lychee_id: string }
-  | { type: "send_message"; repo_path: string; lychee_id: string | null; content: string };
+  | { type: "send_message"; repo_path: string; lychee_id: string | null; content: string; model: string }
+  | { type: "checkout_branch"; repo_path: string; lychee_id: string }
+  | { type: "revert_checkout"; repo_path: string; lychee_id: string };
 
 interface SessionsState {
   repos: RepoInfo[];
@@ -150,7 +154,7 @@ class SessionsService {
     const trimmed = content.trim();
     if (!trimmed) return;
 
-    const { activeRepoPath, currentSessionId, activeStreams } = this.state;
+    const { activeRepoPath, currentSessionId, activeStreams, selectedModel } = this.state;
     if (!activeRepoPath || !currentSessionId || activeStreams.has(currentSessionId)) {
       return;
     }
@@ -167,6 +171,23 @@ class SessionsService {
       repo_path: activeRepoPath,
       lychee_id: currentSessionId,
       content: trimmed,
+      model: selectedModel,
+    });
+  };
+
+  checkoutBranch = (repoPath: string, lycheeId: string) => {
+    this.sendMessage({
+      type: "checkout_branch",
+      repo_path: repoPath,
+      lychee_id: lycheeId,
+    });
+  };
+
+  revertCheckout = (repoPath: string, lycheeId: string) => {
+    this.sendMessage({
+      type: "revert_checkout",
+      repo_path: repoPath,
+      lychee_id: lycheeId,
     });
   };
 
@@ -238,6 +259,8 @@ class SessionsService {
                 name: message.repo_name,
                 path: message.repo_path,
                 sessions: [],
+                checked_out_session: null,
+                main_dir_uncommitted: false,
               },
             ].sort((a, b) => a.name.localeCompare(b.name)),
           };
@@ -285,6 +308,8 @@ class SessionsService {
                       ...session,
                       isStreaming: prev.activeStreams.has(session.lychee_id),
                     })),
+                  checked_out_session: message.checked_out_session ?? null,
+                  main_dir_uncommitted: message.main_dir_uncommitted ?? false,
                 }
               : repo
           ),
@@ -518,6 +543,8 @@ export function useSessions() {
       refreshSessions: service.refreshSessions,
       sendChatMessage: service.sendChatMessage,
       setModel: service.setModel,
+      checkoutBranch: service.checkoutBranch,
+      revertCheckout: service.revertCheckout,
     }),
     [state, service]
   );

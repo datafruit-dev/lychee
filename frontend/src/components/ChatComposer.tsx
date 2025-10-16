@@ -25,10 +25,10 @@ interface ChatComposerProps {
 }
 
 const CLAUDE_MODELS = [
-  { value: "claude-sonnet-4-20250514", label: "Claude 4 Sonnet" },
-  { value: "claude-3-7-sonnet-20250219", label: "Claude 3.7 Sonnet" },
-  { value: "claude-3-5-sonnet-20241022", label: "Claude 3.5 Sonnet" },
-  { value: "claude-3-5-haiku-20241022", label: "Claude 3.5 Haiku" },
+  { value: "claude-sonnet-4-5-20250929", label: "Default (Sonnet 4.5)" },
+  { value: "claude-opus-4-1-20250805", label: "Opus 4.1" },
+  { value: "claude-sonnet-4-5-20250929 + context beta", label: "Sonnet 4.5 (1M context)" },
+  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 ];
 
 export default function ChatComposer({

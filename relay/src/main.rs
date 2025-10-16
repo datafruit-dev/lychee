@@ -32,7 +32,7 @@ enum Message {
     #[serde(rename = "load_session")]
     LoadSession { repo_path: String, lychee_id: String },
     #[serde(rename = "send_message")]
-    SendMessage { repo_path: String, lychee_id: String, content: String },
+    SendMessage { repo_path: String, lychee_id: String, content: String, model: String },
 
     // Client -> Browser (via relay)
     #[serde(rename = "sessions_list")]
