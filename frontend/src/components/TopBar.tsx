@@ -49,7 +49,7 @@ export default function TopBar({
         {isCollapsed ? (
           <button
             onClick={onToggleSidebar}
-            className="group w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center rounded text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent focus:outline-none"
+            className="group w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center rounded text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-primary/10 focus:outline-none"
             title="Expand sidebar"
           >
             <Image
