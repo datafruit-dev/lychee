@@ -35,7 +35,7 @@ export default function ChatComposer({
   onSend,
   disabled = false,
   placeholder = "Message Claude...",
-  selectedModel = "claude-sonnet-4-20250514",
+  selectedModel = "claude-sonnet-4-5-20250929",
   onModelChange,
 }: ChatComposerProps) {
   const [value, setValue] = useState("");

@@ -81,7 +81,7 @@ export default function Home() {
               {messageItems.map(({ message, text }, index) => {
                 if (message.role === "user") {
                   return (
-                    <div key={`user-${index}`} className="flex justify-end">
+                    <div key={`user-${index}`} className="flex justify-end message-fade-in">
                       <div className="max-w-[75%] rounded-2xl bg-muted px-4 py-3 text-sm leading-relaxed text-foreground shadow-sm whitespace-pre-wrap">
                         {text}
                       </div>
@@ -91,16 +91,19 @@ export default function Home() {
 
                 if (message.role === "assistant") {
                   const isPending = text.trim().length === 0;
+                  const hasStartedStreaming = text.length > 0 && text.length < 50;
                   return (
                     <div key={`assistant-${index}`} className="flex justify-start">
                       <div className="w-full">
                         {isPending ? (
-                          <div className="flex items-center gap-2 text-muted-foreground">
+                          <div className="thinking-indicator flex items-center gap-2 text-muted-foreground">
                             <span className="h-2 w-2 animate-pulse rounded-full bg-primary/70" />
                             <span className="animate-pulse">Claude is thinking...</span>
                           </div>
                         ) : (
-                          <MarkdownRenderer content={text} className="text-sm leading-relaxed" />
+                          <div className={hasStartedStreaming ? "message-fade-in" : ""}>
+                            <MarkdownRenderer content={text} className="text-sm leading-relaxed" />
+                          </div>
                         )}
                       </div>
                     </div>
@@ -108,7 +111,7 @@ export default function Home() {
                 }
 
                 return (
-                  <div key={`system-${index}`} className="flex justify-center">
+                  <div key={`system-${index}`} className="flex justify-center message-fade-in">
                     <div className="max-w-[80%] rounded-2xl border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm leading-relaxed text-yellow-800 shadow-sm whitespace-pre-wrap">
                       {text}
                     </div>
