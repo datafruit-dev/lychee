@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { ChevronUp } from "lucide-react";
 
 interface SessionInfoPanelProps {
@@ -20,40 +20,16 @@ export default function SessionInfoPanel({
 }: SessionInfoPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // Handle click outside
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleClickOutside = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        const target = e.target as HTMLElement;
-        if (!target.closest('[data-dropdown-trigger]')) {
-          onClose();
-        }
-      }
-    };
-
-    // Delay to avoid immediate close on open
-    const timer = setTimeout(() => {
-      document.addEventListener('mousedown', handleClickOutside);
-    }, 100);
-
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isOpen, onClose]);
-
+  // No click-outside detection - panel stays open until explicitly closed
   if (!isOpen) return null;
 
   return (
     <div
       ref={panelRef}
-      className="session-info-panel bg-background"
+      className="session-info-panel bg-background border-b border-border"
       style={{
         height: '33vh',
         minHeight: '280px',
-        borderBottom: '1px solid var(--border)',
       }}
     >
       <div className="h-full relative flex items-center px-8 py-12">
@@ -104,8 +80,9 @@ export default function SessionInfoPanel({
         {/* Close button */}
         <button
           onClick={onClose}
-          className="absolute bottom-4 left-1/2 -translate-x-1/2 text-muted-foreground hover:text-foreground transition-colors"
-          aria-label="Close"
+          className="absolute bottom-4 left-1/2 -translate-x-1/2 text-muted-foreground hover:text-foreground transition-colors p-2 rounded hover:bg-muted z-10 cursor-pointer"
+          aria-label="Close session info"
+          type="button"
         >
           <ChevronUp className="w-5 h-5" />
         </button>

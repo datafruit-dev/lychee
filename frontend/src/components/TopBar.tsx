@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Image from "next/image";
 import { ChevronDown } from "lucide-react";
 import type { RepoInfo } from "@/lib/sessions";
@@ -30,6 +30,20 @@ export default function TopBar({
   isResizingRightSidebar,
 }: TopBarProps) {
   const [isPanelOpen, setIsPanelOpen] = useState(false);
+  const [showHeaderContent, setShowHeaderContent] = useState(true);
+
+  // Handle fade in/out of header content
+  useEffect(() => {
+    if (isPanelOpen) {
+      setShowHeaderContent(false);
+    } else {
+      // Delay showing header content to create fade-in effect
+      const timer = setTimeout(() => {
+        setShowHeaderContent(true);
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [isPanelOpen]);
 
   return (
     <div className="flex-shrink-0 flex h-12">
@@ -102,11 +116,17 @@ export default function TopBar({
 
       {/* Main content area */}
       <div className="flex-1 flex flex-col bg-background">
-        <div className="h-12 flex items-center justify-between px-4 border-b border-border">
-          {activeRepo && currentSessionId ? (
-            <div className="flex items-center gap-3 text-sm">
-              {!isPanelOpen && (
-                <>
+        <div className={`h-12 flex items-center justify-between px-4 border-border ${
+          isPanelOpen ? '' : 'border-b'
+        }`}>
+          <div className="flex items-center gap-3">
+            {activeRepo && currentSessionId ? (
+              <div className="flex items-center gap-3 text-sm">
+                <div
+                  className={`flex items-center gap-3 transition-opacity duration-300 ${
+                    showHeaderContent ? 'opacity-100' : 'opacity-0'
+                  }`}
+                >
                   <div className="font-medium text-foreground">{activeRepo.name}</div>
                   <div className="text-muted-foreground">/</div>
                   <div className="text-muted-foreground">{currentSessionId}</div>
@@ -118,14 +138,25 @@ export default function TopBar({
                   >
                     <ChevronDown className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
                   </button>
-                </>
-              )}
-            </div>
-          ) : (
-            <div className="text-sm text-muted-foreground">
-              {activeRepo ? "Select a branch" : "No repository selected"}
-            </div>
-          )}
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-muted-foreground">
+                {activeRepo ? "Select a branch" : "No repository selected"}
+              </div>
+            )}
+          </div>
+
+          {/* Tool Calls toggle button - fade in/out with panel */}
+          <button
+            onClick={onToggleRightSidebar}
+            className={`px-3 py-1.5 text-xs font-medium rounded-md bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent border border-border transition-opacity duration-300 ${
+              showHeaderContent ? 'opacity-100' : 'opacity-0 pointer-events-none'
+            }`}
+            title={isRightSidebarOpen ? "Close tool calls" : "Open tool calls"}
+          >
+            Tool Calls
+          </button>
         </div>
 
         {/* Session info panel - only in main content area */}
@@ -138,15 +169,6 @@ export default function TopBar({
             branchOrigin="origin/main"
           />
         )}
-
-        {/* Temporary toggle button */}
-        <button
-          onClick={onToggleRightSidebar}
-          className="px-3 py-1.5 text-xs font-medium rounded-md transition-colors bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent border border-border"
-          title={isRightSidebarOpen ? "Close tool calls" : "Open tool calls"}
-        >
-          Tool Calls
-        </button>
       </div>
 
       {/* Right sidebar section of top bar */}
