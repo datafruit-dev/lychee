@@ -49,7 +49,7 @@ export default function TopBar({
         {isCollapsed ? (
           <button
             onClick={onToggleSidebar}
-            className="group w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center rounded text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-primary/10 focus:outline-none"
+            className="group w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent focus:outline-none"
             title="Expand sidebar"
           >
             <Image
@@ -86,7 +86,7 @@ export default function TopBar({
             </div>
             <button
               onClick={onToggleSidebar}
-              className="w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center rounded text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent focus:outline-none"
+              className="w-9 h-9 flex-shrink-0 transition-all relative flex items-center justify-center text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent focus:outline-none"
               title="Collapse sidebar"
             >
               <svg
@@ -130,7 +130,7 @@ export default function TopBar({
         {currentSessionId && activeRepo && (
           <div className="relative group">
             <button
-              className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+              className={`px-3 py-1.5 text-xs font-medium transition-colors ${
                 isDisabled
                   ? "bg-muted text-muted-foreground cursor-not-allowed"
                   : "bg-primary text-primary-foreground hover:bg-primary/90"
@@ -141,7 +141,7 @@ export default function TopBar({
               {isCheckedOut ? "Revert" : "Checkout"}
             </button>
             {isDisabled && (
-              <div className="absolute right-0 top-full mt-2 w-64 bg-popover text-popover-foreground text-xs rounded-md p-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-md border border-border">
+              <div className="absolute right-0 top-full mt-2 w-64 bg-popover text-popover-foreground text-xs p-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-md border border-border">
                 {getTooltip()}
               </div>
             )}

@@ -85,7 +85,7 @@ export default function Sidebar({
             <div className="text-center py-8 px-4">
               <p className="text-sm text-sidebar-foreground/70">No repositories connected</p>
               <p className="text-xs text-sidebar-foreground/50 mt-1">
-                Run <code className="bg-sidebar-primary/10 px-1 rounded-sm">lychee up</code>
+                Run <code className="bg-sidebar-accent px-1 rounded-sm">lychee up</code>
               </p>
             </div>
           )
@@ -101,7 +101,7 @@ export default function Sidebar({
                   {/* Repo Header */}
                   <button
                     onClick={() => toggleRepo(repo.path)}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-sm cursor-pointer group text-left hover:bg-sidebar-primary/10"
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-sm cursor-pointer group text-left hover:bg-sidebar-accent"
                   >
                     {isExpanded ? (
                       <ChevronDown className="w-3.5 h-3.5 text-sidebar-foreground/50 flex-shrink-0" />
@@ -128,7 +128,7 @@ export default function Sidebar({
                         className={`w-full group flex items-center gap-2 px-2 py-1.5 rounded-sm cursor-pointer transition-colors text-left ${
                           isCreating
                             ? "text-sidebar-foreground/40"
-                            : "hover:bg-sidebar-primary/10 text-sidebar-foreground/60 hover:text-sidebar-foreground"
+                            : "hover:bg-sidebar-accent text-sidebar-foreground/60 hover:text-sidebar-foreground"
                         } ${isCreating ? "pointer-events-none" : ""}`}
                       >
                         <Plus className={`w-3 h-3 flex-shrink-0 ${isCreating ? "animate-spin" : ""}`} strokeWidth={2} />
@@ -150,8 +150,8 @@ export default function Sidebar({
                               onClick={() => onSelectSession(repo.path, session.lychee_id)}
                               className={`w-full group flex items-start gap-2 px-2 py-1.5 rounded-sm cursor-pointer transition-colors text-left ${
                                 isActiveSession
-                                  ? "bg-sidebar-primary/10 text-sidebar-foreground"
-                                  : "hover:bg-sidebar-primary/10 text-sidebar-foreground/70 hover:text-sidebar-foreground"
+                                  ? "bg-sidebar-accent text-sidebar-foreground"
+                                  : "hover:bg-sidebar-accent text-sidebar-foreground/70 hover:text-sidebar-foreground"
                               }`}
                             >
                               <GitBranch
