@@ -31,15 +31,6 @@ export default function AppShell({ children }: AppShellProps) {
     ? sessions.activeStreams.has(sessions.currentSessionId)
     : false;
 
-  const handleCheckout = () => {
-    if (!sessions.activeRepoPath || !sessions.currentSessionId) return;
-    sessions.checkoutBranch(sessions.activeRepoPath, sessions.currentSessionId);
-  };
-
-  const handleRevert = () => {
-    if (!sessions.activeRepoPath || !sessions.currentSessionId) return;
-    sessions.revertCheckout(sessions.activeRepoPath, sessions.currentSessionId);
-  };
 
   useEffect(() => {
     try {
@@ -70,8 +61,6 @@ export default function AppShell({ children }: AppShellProps) {
           activeRepo={activeRepo}
           currentSessionId={sessions.currentSessionId}
           isStreaming={isStreaming}
-          onCheckout={handleCheckout}
-          onRevert={handleRevert}
         />
         <div className="flex flex-1 min-h-0 overflow-hidden">
           <Sidebar
