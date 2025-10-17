@@ -1,6 +1,8 @@
 "use client";
 
-import { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useState } from "react";
+import { ChatMessage, ClaudeToolUse } from "@/lib/sessions";
+import ToolDetailPanel from "./ToolDetailPanel";
 
 interface RightSidebarProps {
   isOpen: boolean;
@@ -8,6 +10,12 @@ interface RightSidebarProps {
   width: number;
   onWidthChange: (width: number) => void;
   onResizingChange: (isResizing: boolean) => void;
+  selectedToolCall?: {
+    tool: ClaudeToolUse;
+    contextMessage?: ChatMessage;
+    precedingContext?: string | null;
+  } | null;
+  onToolCallClose?: () => void;
 }
 
 export default function RightSidebar({
@@ -16,6 +24,8 @@ export default function RightSidebar({
   width,
   onWidthChange,
   onResizingChange,
+  selectedToolCall,
+  onToolCallClose,
 }: RightSidebarProps) {
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -83,13 +93,22 @@ export default function RightSidebar({
       )}
 
       {/* Content */}
-      <div className={`flex-1 overflow-y-auto pb-2 px-1.5 pt-1.5 min-h-0 ${isOpen ? 'opacity-100' : 'opacity-0'} transition-opacity duration-150`}>
-        <div className="p-4">
-          <h3 className="text-sm font-medium text-sidebar-foreground mb-2">Tool Call Details</h3>
-          <p className="text-xs text-sidebar-foreground/70">
-            Click on a tool call to view details here.
-          </p>
-        </div>
+      <div className={`flex-1 overflow-y-auto min-h-0 ${isOpen ? 'opacity-100' : 'opacity-0'} transition-opacity duration-150`}>
+        {selectedToolCall ? (
+          <ToolDetailPanel
+            toolCall={selectedToolCall.tool}
+            contextMessage={selectedToolCall.contextMessage}
+            precedingContext={selectedToolCall.precedingContext}
+            onClose={() => onToolCallClose?.()}
+          />
+        ) : (
+          <div className="p-4">
+            <h3 className="text-sm font-medium text-sidebar-foreground mb-2">Tool Call Details</h3>
+            <p className="text-xs text-sidebar-foreground/70">
+              Click on a tool call to view details here.
+            </p>
+          </div>
+        )}
       </div>
     </aside>
   );

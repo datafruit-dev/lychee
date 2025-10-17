@@ -1,18 +1,32 @@
 "use client";
 
-import { ReactNode, useState, useEffect, useMemo, createContext, useContext } from "react";
+import { ReactNode, useState, useEffect, createContext, useContext } from "react";
 import Sidebar from "./Sidebar";
 import RightSidebar from "./RightSidebar";
 import TopBar from "./TopBar";
-import { useSessions } from "@/lib/sessions";
+import SessionInfoPanel from "./SessionInfoPanel";
+import { useSessions, ChatMessage, ClaudeToolUse } from "@/lib/sessions";
 
 interface AppShellProps {
   children: ReactNode;
 }
 
-type SessionsContextValue = ReturnType<typeof useSessions>;
+interface AppShellContextValue extends ReturnType<typeof useSessions> {
+  selectedToolCall: {
+    tool: ClaudeToolUse;
+    contextMessage?: ChatMessage;
+    precedingContext?: string | null;
+  } | null;
+  setSelectedToolCall: (toolCall: {
+    tool: ClaudeToolUse;
+    contextMessage?: ChatMessage;
+    precedingContext?: string | null;
+  } | null) => void;
+  isRightSidebarOpen: boolean;
+  toggleRightSidebar: () => void;
+}
 
-const SessionsContext = createContext<SessionsContextValue | null>(null);
+const SessionsContext = createContext<AppShellContextValue | null>(null);
 
 export function useSessionsContext() {
   const ctx = useContext(SessionsContext);
@@ -29,6 +43,12 @@ export default function AppShell({ children }: AppShellProps) {
   const [rightSidebarWidth, setRightSidebarWidth] = useState(288); // Default 288px (w-72)
   const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
   const [hasMounted, setHasMounted] = useState(false);
+  const [isPanelOpen, setIsPanelOpen] = useState(false);
+  const [selectedToolCall, setSelectedToolCall] = useState<{
+    tool: ClaudeToolUse;
+    contextMessage?: ChatMessage;
+    precedingContext?: string | null;
+  } | null>(null);
 
   const activeRepo = sessions.repos.find((repo) => repo.path === sessions.activeRepoPath) || null;
   const isStreaming = sessions.currentSessionId
@@ -57,8 +77,23 @@ export default function AppShell({ children }: AppShellProps) {
   const toggleSidebar = () => setIsCollapsed(!isCollapsed);
   const toggleRightSidebar = () => setIsRightSidebarOpen(!isRightSidebarOpen);
 
+  // Automatically open right sidebar when tool is selected
+  useEffect(() => {
+    if (selectedToolCall && !isRightSidebarOpen) {
+      setIsRightSidebarOpen(true);
+    }
+  }, [selectedToolCall]);
+
+  const contextValue: AppShellContextValue = {
+    ...sessions,
+    selectedToolCall,
+    setSelectedToolCall,
+    isRightSidebarOpen,
+    toggleRightSidebar,
+  };
+
   return (
-    <SessionsContext.Provider value={sessions}>
+    <SessionsContext.Provider value={contextValue}>
       <div className="flex flex-col h-screen w-screen overflow-hidden bg-background">
         <TopBar
           isCollapsed={isCollapsed}
@@ -70,7 +105,10 @@ export default function AppShell({ children }: AppShellProps) {
           onToggleRightSidebar={toggleRightSidebar}
           rightSidebarWidth={rightSidebarWidth}
           isResizingRightSidebar={isResizingRightSidebar}
+          isPanelOpen={isPanelOpen}
+          onTogglePanel={() => setIsPanelOpen(!isPanelOpen)}
         />
+
         <div className="flex flex-1 min-h-0 overflow-hidden">
           <Sidebar
             repos={sessions.repos}
@@ -82,16 +120,38 @@ export default function AppShell({ children }: AppShellProps) {
             isCreatingSession={sessions.isCreatingSession}
             isCollapsed={isCollapsed}
             onToggleSidebar={toggleSidebar}
+            isStreaming={isStreaming}
           />
+
           <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-            {children}
+            {/* Session info panel - pushes content down when open */}
+            {activeRepo && sessions.currentSessionId && (
+              <SessionInfoPanel
+                isOpen={isPanelOpen}
+                onClose={() => setIsPanelOpen(false)}
+                repoName={activeRepo.name}
+                sessionId={sessions.currentSessionId}
+                branchOrigin="origin/main"
+              />
+            )}
+
+            {/* Main content area */}
+            <div className="flex-1 min-h-0 overflow-hidden">
+              {children}
+            </div>
           </div>
+
           <RightSidebar
             isOpen={isRightSidebarOpen}
             onToggle={toggleRightSidebar}
             width={rightSidebarWidth}
             onWidthChange={setRightSidebarWidth}
             onResizingChange={setIsResizingRightSidebar}
+            selectedToolCall={selectedToolCall}
+            onToolCallClose={() => {
+              setSelectedToolCall(null);
+              setIsRightSidebarOpen(false);
+            }}
           />
         </div>
       </div>

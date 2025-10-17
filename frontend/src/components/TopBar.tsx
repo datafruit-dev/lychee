@@ -4,7 +4,6 @@ import { useState, useEffect } from "react";
 import Image from "next/image";
 import { ChevronDown } from "lucide-react";
 import type { RepoInfo } from "@/lib/sessions";
-import SessionInfoPanel from "./SessionInfoPanel";
 
 interface TopBarProps {
   isCollapsed: boolean;
@@ -16,6 +15,8 @@ interface TopBarProps {
   onToggleRightSidebar: () => void;
   rightSidebarWidth: number;
   isResizingRightSidebar: boolean;
+  isPanelOpen: boolean;
+  onTogglePanel: () => void;
 }
 
 export default function TopBar({
@@ -28,8 +29,9 @@ export default function TopBar({
   onToggleRightSidebar,
   rightSidebarWidth,
   isResizingRightSidebar,
+  isPanelOpen,
+  onTogglePanel,
 }: TopBarProps) {
-  const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [showHeaderContent, setShowHeaderContent] = useState(true);
 
   // Handle fade in/out of header content
@@ -132,7 +134,7 @@ export default function TopBar({
                   <div className="text-muted-foreground">{currentSessionId}</div>
                   <button
                     data-dropdown-trigger
-                    onClick={() => setIsPanelOpen(true)}
+                    onClick={onTogglePanel}
                     className="ml-1 p-1 rounded hover:bg-muted transition-colors"
                     aria-label="Show session info"
                   >
@@ -158,17 +160,6 @@ export default function TopBar({
             Tool Calls
           </button>
         </div>
-
-        {/* Session info panel - only in main content area */}
-        {activeRepo && currentSessionId && (
-          <SessionInfoPanel
-            isOpen={isPanelOpen}
-            onClose={() => setIsPanelOpen(false)}
-            repoName={activeRepo.name}
-            sessionId={currentSessionId}
-            branchOrigin="origin/main"
-          />
-        )}
       </div>
 
       {/* Right sidebar section of top bar */}

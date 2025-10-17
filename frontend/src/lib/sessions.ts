@@ -10,9 +10,23 @@ export interface ClaudeTextBlock {
   [key: string]: unknown;
 }
 
+export interface ClaudeToolUse {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
 export type ChatMessage = {
   role: ChatRole;
-  content: string | ClaudeTextBlock[];
+  content: string | ClaudeTextBlock[] | (ClaudeTextBlock | ClaudeToolUse)[];
+  // Additional fields from Claude Code
+  isSidechain?: boolean;
+  parentUuid?: string;
+  uuid?: string;
+  timestamp?: string;
+  // For streaming: length of text when tools first appeared
+  textLengthAtTools?: number;
 };
 
 export interface SessionInfo {
@@ -37,7 +51,7 @@ type RelayInboundMessage =
   | { type: "sessions_list"; repo_path: string; sessions?: SessionInfo[] }
   | { type: "session_created"; repo_path: string; lychee_id: string }
   | { type: "session_history"; repo_path: string; lychee_id: string; messages?: ChatMessage[] }
-  | { type: "claude_stream"; repo_path: string; lychee_id: string; data: any }
+  | { type: "claude_stream"; repo_path: string; lychee_id: string; data: unknown }
   | { type: "client_count"; count: number }
   | { type: "error"; repo_path?: string | null; message: string };
 
@@ -81,6 +95,8 @@ class SessionsService {
   private reconnectTimeout: number | null = null;
   private readonly wsUrl: string;
   private streamBuffers: Record<string, string> = {};
+  // Track text length when first tool appears for each session
+  private textSnapshotAtTools: Record<string, number> = {};
 
   constructor() {
     this.wsUrl = (typeof process !== "undefined" && process.env.NEXT_PUBLIC_WS_URL) || "ws://localhost:3001/ws";
@@ -348,12 +364,13 @@ class SessionsService {
     }
   }
 
-  private handleClaudeStream(lycheeId: string, data: any) {
-    const streamType = data?.type;
+  private handleClaudeStream(lycheeId: string, data: unknown) {
+    const streamType = (data as {type?: string})?.type;
     if (!streamType) return;
 
     if (streamType === "init" || streamType === "system") {
       this.streamBuffers[lycheeId] = "";
+      delete this.textSnapshotAtTools[lycheeId]; // Reset snapshot for new stream
       this.updateState((prev) => {
         const activeStreams = new Set(prev.activeStreams).add(lycheeId);
         return {
@@ -366,16 +383,10 @@ class SessionsService {
     }
 
     if (streamType === "assistant") {
-      const contentBlocks = Array.isArray(data?.message?.content)
-        ? data.message.content
+      const dataObj = data as {message?: {content?: unknown}};
+      const contentBlocks = Array.isArray(dataObj?.message?.content)
+        ? dataObj.message.content
         : [];
-      const text = contentBlocks
-        .filter((block: ClaudeTextBlock) => block.type === "text")
-        .map((block: ClaudeTextBlock) => block.text || "")
-        .join("");
-
-      this.streamBuffers[lycheeId] = (this.streamBuffers[lycheeId] || "") + text;
-      const accumulated = this.streamBuffers[lycheeId];
 
       this.updateState((prev) => {
         if (prev.currentSessionId !== lycheeId) {
@@ -385,10 +396,58 @@ class SessionsService {
         const messages = [...prev.messages];
         const last = messages[messages.length - 1];
 
+        // Check if we should update existing message or create new one
         if (last && last.role === "assistant") {
-          messages[messages.length - 1] = { ...last, content: accumulated };
+          // Update existing assistant message with new content blocks
+          const existingContent = Array.isArray(last.content) ? last.content : [];
+
+          // Merge content blocks - combine text, append tool_use
+          const mergedContent = [...existingContent];
+
+          contentBlocks.forEach((newBlock: unknown) => {
+            const block = newBlock as {type?: string; text?: string; id?: string};
+            if (block.type === "text") {
+              // Find existing text block and update it, or append
+              const textIndex = mergedContent.findIndex((b: unknown) => (b as {type?: string}).type === "text");
+              if (textIndex >= 0) {
+                const existingText = (mergedContent[textIndex] as {text?: string}).text || "";
+                mergedContent[textIndex] = {
+                  type: "text",
+                  text: existingText + (block.text || "")
+                } as ClaudeTextBlock;
+              } else {
+                mergedContent.push(block as ClaudeTextBlock);
+              }
+            } else if (block.type === "tool_use") {
+              // Capture text length when first tool appears
+              if (!last.textLengthAtTools && mergedContent.some((b: unknown) => (b as {type?: string}).type === "text")) {
+                const textBlock = mergedContent.find((b: unknown) => (b as {type?: string}).type === "text") as {text?: string};
+                const currentTextLength = textBlock?.text?.length || 0;
+                // Will set this on the message below
+                this.textSnapshotAtTools[lycheeId] = currentTextLength;
+              }
+
+              // Only add tool_use if not already present (check by id)
+              const exists = mergedContent.some((b: unknown) =>
+                (b as {type?: string; id?: string}).type === "tool_use" && (b as {id?: string}).id === block.id
+              );
+              if (!exists) {
+                mergedContent.push(block as ClaudeToolUse);
+              }
+            } else {
+              // Other block types - just append if not duplicate
+              mergedContent.push(block as ClaudeTextBlock);
+            }
+          });
+
+          messages[messages.length - 1] = {
+            ...last,
+            content: mergedContent,
+            textLengthAtTools: this.textSnapshotAtTools[lycheeId]
+          };
         } else {
-          messages.push({ role: "assistant", content: accumulated });
+          // Create new assistant message
+          messages.push({ role: "assistant", content: contentBlocks });
         }
 
         return {
@@ -401,6 +460,7 @@ class SessionsService {
 
     if (streamType === "result" || streamType === "error") {
       delete this.streamBuffers[lycheeId];
+      delete this.textSnapshotAtTools[lycheeId]; // Clean up snapshot
       this.updateState((prev) => {
         const activeStreams = new Set(prev.activeStreams);
         activeStreams.delete(lycheeId);
@@ -412,7 +472,7 @@ class SessionsService {
       });
 
       if (streamType === "error") {
-        const errorMessage = data?.message;
+        const errorMessage = (data as {message?: string})?.message;
         if (errorMessage && this.state.currentSessionId === lycheeId) {
           const systemMessage: ChatMessage = {
             role: "system",

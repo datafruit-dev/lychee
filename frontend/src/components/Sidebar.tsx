@@ -14,6 +14,7 @@ interface SidebarProps {
   onToggleSidebar: () => void;
   creatingSessionForRepo: string | null;
   isCreatingSession: boolean;
+  isStreaming: boolean;
 }
 
 function formatRelativeTime(dateString: string): string {
@@ -43,6 +44,7 @@ export default function Sidebar({
   onToggleSidebar,
   creatingSessionForRepo,
   isCreatingSession,
+  isStreaming,
 }: SidebarProps) {
   const [expandedRepos, setExpandedRepos] = useState<Set<string>>(
     new Set()
@@ -143,6 +145,7 @@ export default function Sidebar({
                       ) : (
                         repo.sessions.map((session) => {
                           const isActiveSession = session.lychee_id === currentSessionId && repo.path === activeRepoPath;
+                          const isSessionStreaming = isActiveSession && isStreaming;
 
                           return (
                             <button
@@ -155,8 +158,12 @@ export default function Sidebar({
                               }`}
                             >
                               <GitBranch
-                                className={`w-3 h-3 mt-0.5 flex-shrink-0 ${
-                                  isActiveSession ? "text-sidebar-foreground" : "text-sidebar-foreground/40"
+                                className={`w-3 h-3 mt-0.5 flex-shrink-0 transition-colors ${
+                                  isSessionStreaming
+                                    ? "text-orange-500"
+                                    : isActiveSession
+                                      ? "text-sidebar-foreground"
+                                      : "text-sidebar-foreground/40"
                                 }`}
                                 strokeWidth={2}
                               />

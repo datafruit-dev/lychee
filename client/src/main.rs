@@ -611,9 +611,18 @@ async fn load_session_history(repo_path: &str, lychee_id: &str, debug: bool) -> 
                             // Check if this is a user or assistant message
                             if let Some(msg_type) = entry.get("type").and_then(|t| t.as_str()) {
                                 if msg_type == "user" || msg_type == "assistant" {
-                                    // Extract the nested message object and pass as-is
+                                    // Extract the nested message object
                                     if let Some(message) = entry.get("message") {
-                                        messages.push(message.clone());
+                                        let mut enriched = message.clone();
+
+                                        // Preserve isSidechain flag from the entry
+                                        if let Some(is_sidechain) = entry.get("isSidechain") {
+                                            if let Some(obj) = enriched.as_object_mut() {
+                                                obj.insert("isSidechain".to_string(), is_sidechain.clone());
+                                            }
+                                        }
+
+                                        messages.push(enriched);
                                     }
                                 }
                             }
