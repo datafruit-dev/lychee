@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { ChevronDown, ChevronRight, Plus, GitBranch, FolderOpen, FolderClosed } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, GitBranch, GitCommitVertical, FolderOpen, FolderClosed } from "lucide-react";
 import type { RepoInfo } from "@/lib/sessions";
 
 interface SidebarProps {
@@ -10,6 +10,7 @@ interface SidebarProps {
   currentSessionId: string | null;
   onSelectSession: (repoPath: string, sessionId: string) => void;
   onNewSession: (repoPath: string) => void;
+  onNewWorktreeSession: (repoPath: string) => void;
   isCollapsed: boolean;
   onToggleSidebar: () => void;
   creatingSessionForRepo: string | null;
@@ -39,6 +40,7 @@ export default function Sidebar({
   currentSessionId,
   onSelectSession,
   onNewSession,
+  onNewWorktreeSession,
   isCollapsed,
   onToggleSidebar,
   creatingSessionForRepo,
@@ -121,7 +123,7 @@ export default function Sidebar({
                   {/* Sessions */}
                   {isExpanded && (
                     <div className="ml-5 mt-0.5 space-y-0.5">
-                      {/* New Branch Button */}
+                      {/* New Session Button (regular) */}
                       <button
                         onClick={() => onNewSession(repo.path)}
                         disabled={isCreating}
@@ -132,7 +134,21 @@ export default function Sidebar({
                         } ${isCreating ? "pointer-events-none" : ""}`}
                       >
                         <Plus className={`w-3 h-3 flex-shrink-0 ${isCreating ? "animate-spin" : ""}`} strokeWidth={2} />
-                        <span className="text-xs">{isCreating ? "Creating..." : "New Branch"}</span>
+                        <span className="text-xs">{isCreating ? "Creating..." : "New Session"}</span>
+                      </button>
+
+                      {/* New Worktree Button */}
+                      <button
+                        onClick={() => onNewWorktreeSession(repo.path)}
+                        disabled={isCreating}
+                        className={`w-full group flex items-center gap-2 px-2 py-1.5 rounded-sm cursor-pointer transition-colors text-left ${
+                          isCreating
+                            ? "text-sidebar-foreground/40"
+                            : "hover:bg-sidebar-accent text-sidebar-foreground/60 hover:text-sidebar-foreground"
+                        } ${isCreating ? "pointer-events-none" : ""}`}
+                      >
+                        <Plus className={`w-3 h-3 flex-shrink-0 ${isCreating ? "animate-spin" : ""}`} strokeWidth={2} />
+                        <span className="text-xs">{isCreating ? "Creating..." : "New Worktree"}</span>
                       </button>
 
                       {/* Session List */}
@@ -156,16 +172,29 @@ export default function Sidebar({
                                   : "hover:bg-sidebar-accent text-sidebar-foreground/70 hover:text-sidebar-foreground"
                               }`}
                             >
-                              <GitBranch
-                                className={`w-3 h-3 mt-0.5 flex-shrink-0 transition-colors ${
-                                  isSessionStreaming
-                                    ? "text-orange-500"
-                                    : isActiveSession
-                                      ? "text-sidebar-foreground"
-                                      : "text-sidebar-foreground/40"
-                                }`}
-                                strokeWidth={2}
-                              />
+                              {session.is_worktree ? (
+                                <GitBranch
+                                  className={`w-3 h-3 mt-0.5 flex-shrink-0 transition-colors ${
+                                    isSessionStreaming
+                                      ? "text-orange-500"
+                                      : isActiveSession
+                                        ? "text-sidebar-foreground"
+                                        : "text-sidebar-foreground/40"
+                                  }`}
+                                  strokeWidth={2}
+                                />
+                              ) : (
+                                <GitCommitVertical
+                                  className={`w-3 h-3 mt-0.5 flex-shrink-0 transition-colors ${
+                                    isSessionStreaming
+                                      ? "text-orange-500"
+                                      : isActiveSession
+                                        ? "text-sidebar-foreground"
+                                        : "text-sidebar-foreground/40"
+                                  }`}
+                                  strokeWidth={2}
+                                />
+                              )}
                               <div className="flex-1 min-w-0">
                                 <div
                                   className="text-xs truncate leading-tight"

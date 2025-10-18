@@ -29,6 +29,8 @@ enum Message {
     ListSessions { repo_path: String },
     #[serde(rename = "create_session")]
     CreateSession { repo_path: String },
+    #[serde(rename = "create_worktree_session")]
+    CreateWorktreeSession { repo_path: String },
     #[serde(rename = "load_session")]
     LoadSession { repo_path: String, lychee_id: String },
     #[serde(rename = "send_message")]
@@ -91,6 +93,7 @@ struct SessionInfo {
     claude_session_id: Option<String>,
     created_at: String,
     last_active: String,
+    is_worktree: bool,
 }
 
 #[derive(Clone)]
@@ -309,6 +312,7 @@ async fn handle_browser(
                 let repo_path = match &msg {
                     Message::ListSessions { repo_path } |
                     Message::CreateSession { repo_path } |
+                    Message::CreateWorktreeSession { repo_path } |
                     Message::LoadSession { repo_path, .. } |
                     Message::SendMessage { repo_path, .. } => Some(repo_path.clone()),
                     _ => None,

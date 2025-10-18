@@ -33,6 +33,7 @@ export interface SessionInfo {
   created_at: string;
   last_active: string;
   isStreaming?: boolean;
+  is_worktree: boolean;
 }
 
 export interface RepoInfo {
@@ -60,6 +61,7 @@ type RelayOutboundMessage =
   | { type: "register_browser" }
   | { type: "list_sessions"; repo_path: string }
   | { type: "create_session"; repo_path: string }
+  | { type: "create_worktree_session"; repo_path: string }
   | { type: "load_session"; repo_path: string; lychee_id: string }
   | { type: "send_message"; repo_path: string; lychee_id: string | null; content: string; model: string };
 
@@ -142,6 +144,19 @@ class SessionsService {
 
     this.sendMessage({
       type: "create_session",
+      repo_path: repoPath,
+    });
+  };
+
+  createWorktreeSession = (repoPath: string) => {
+    this.updateState((prev) => ({
+      ...prev,
+      creatingSessionForRepo: repoPath,
+      isCreatingSession: true,
+    }));
+
+    this.sendMessage({
+      type: "create_worktree_session",
       repo_path: repoPath,
     });
   };
@@ -339,6 +354,9 @@ class SessionsService {
           type: "list_sessions",
           repo_path: message.repo_path,
         });
+
+        // Auto-select the newly created session
+        this.selectSession(message.repo_path, message.lychee_id);
         break;
       }
 
@@ -578,6 +596,7 @@ export function useSessions() {
       ...state,
       selectSession: service.selectSession,
       createSession: service.createSession,
+      createWorktreeSession: service.createWorktreeSession,
       refreshSessions: service.refreshSessions,
       sendChatMessage: service.sendChatMessage,
       setModel: service.setModel,

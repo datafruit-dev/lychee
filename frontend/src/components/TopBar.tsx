@@ -1,6 +1,5 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import Image from "next/image";
 import { ChevronDown } from "lucide-react";
 import type { RepoInfo } from "@/lib/sessions";
@@ -30,20 +29,6 @@ export default function TopBar({
   isPanelOpen,
   onTogglePanel,
 }: TopBarProps) {
-  const [showHeaderContent, setShowHeaderContent] = useState(true);
-
-  // Handle fade in/out of header content
-  useEffect(() => {
-    if (isPanelOpen) {
-      setShowHeaderContent(false);
-    } else {
-      // Delay showing header content to create fade-in effect
-      const timer = setTimeout(() => {
-        setShowHeaderContent(true);
-      }, 150);
-      return () => clearTimeout(timer);
-    }
-  }, [isPanelOpen]);
 
   return (
     <div className="flex-shrink-0 flex h-12">
@@ -122,11 +107,7 @@ export default function TopBar({
           <div className="flex items-center gap-3">
             {activeRepo && currentSessionId ? (
               <div className="flex items-center gap-3 text-sm">
-                <div
-                  className={`flex items-center gap-3 transition-opacity duration-300 ${
-                    showHeaderContent ? 'opacity-100' : 'opacity-0'
-                  }`}
-                >
+                <div className={`flex items-center gap-3 ${isPanelOpen ? 'opacity-0' : 'opacity-100'}`}>
                   <div className="font-medium text-foreground">{activeRepo.name}</div>
                   <div className="text-muted-foreground">/</div>
                   <div className="text-muted-foreground">{currentSessionId}</div>
@@ -147,11 +128,11 @@ export default function TopBar({
             )}
           </div>
 
-          {/* Tool Calls toggle button - fade in/out with panel */}
+          {/* Tool Calls toggle button */}
           <button
             onClick={onToggleRightSidebar}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent border border-border transition-opacity duration-300 ${
-              showHeaderContent ? 'opacity-100' : 'opacity-0 pointer-events-none'
+            className={`px-3 py-1.5 text-xs font-medium rounded-md bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent border border-border ${
+              isPanelOpen ? 'opacity-0 pointer-events-none' : 'opacity-100'
             }`}
             title={isRightSidebarOpen ? "Close tool calls" : "Open tool calls"}
           >

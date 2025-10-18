@@ -48,6 +48,8 @@ enum Message {
     ListSessions { repo_path: String },
     #[serde(rename = "create_session")]
     CreateSession { repo_path: String },
+    #[serde(rename = "create_worktree_session")]
+    CreateWorktreeSession { repo_path: String },
     #[serde(rename = "load_session")]
     LoadSession { repo_path: String, lychee_id: String },
     #[serde(rename = "send_message")]
@@ -115,6 +117,7 @@ struct SessionInfo {
     claude_session_id: Option<String>,
     created_at: String,
     last_active: String,
+    is_worktree: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -128,6 +131,8 @@ struct SessionMetadata {
     claude_session_id: Option<String>,
     created_at: String,
     last_active: String,
+    #[serde(default)]
+    is_worktree: bool,
 }
 
 #[derive(Clone)]
@@ -370,6 +375,16 @@ async fn handle_message(
             }
         }
 
+        Message::CreateWorktreeSession { .. } => {
+            if let Some(lychee_id) = create_worktree_session(repo_path, state.debug).await {
+                let response = Message::SessionCreated {
+                    repo_path: repo_path.to_string(),
+                    lychee_id,
+                };
+                let _ = tx.send(serde_json::to_string(&response).unwrap());
+            }
+        }
+
         Message::LoadSession { lychee_id, .. } => {
             let messages = load_session_history(repo_path, &lychee_id, state.debug).await;
             let response = Message::SessionHistory {
@@ -468,9 +483,9 @@ async fn handle_message(
 async fn list_sessions(repo_path: &str) -> Vec<SessionInfo> {
     let mut sessions = Vec::new();
     let lychee_dir = PathBuf::from(repo_path).join(".lychee");
-
-    // Load session info file
     let session_info_path = lychee_dir.join(".session-info.json");
+
+    // Load session info file - this is the source of truth
     let session_metadata = if session_info_path.exists() {
         match std::fs::read_to_string(&session_info_path) {
             Ok(content) => serde_json::from_str::<SessionInfoFile>(&content).unwrap_or_default(),
@@ -480,28 +495,15 @@ async fn list_sessions(repo_path: &str) -> Vec<SessionInfo> {
         SessionInfoFile { sessions: HashMap::new() }
     };
 
-    // Scan for session directories
-    if let Ok(entries) = std::fs::read_dir(&lychee_dir) {
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with("session-") {
-                        let metadata = session_metadata.sessions.get(name);
-                        sessions.push(SessionInfo {
-                            lychee_id: name.to_string(),
-                            claude_session_id: metadata.and_then(|m| m.claude_session_id.clone()),
-                            created_at: metadata
-                                .map(|m| m.created_at.clone())
-                                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-                            last_active: metadata
-                                .map(|m| m.last_active.clone())
-                                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-                        });
-                    }
-                }
-            }
-        }
+    // Build session list from metadata
+    for (lychee_id, metadata) in session_metadata.sessions.iter() {
+        sessions.push(SessionInfo {
+            lychee_id: lychee_id.clone(),
+            claude_session_id: metadata.claude_session_id.clone(),
+            created_at: metadata.created_at.clone(),
+            last_active: metadata.last_active.clone(),
+            is_worktree: metadata.is_worktree,
+        });
     }
 
     // Sort by last_active descending
@@ -510,6 +512,57 @@ async fn list_sessions(repo_path: &str) -> Vec<SessionInfo> {
 }
 
 async fn create_session(repo_path: &str, debug: bool) -> Option<String> {
+    let lychee_id = format!("session-{}", Uuid::new_v4().to_string().split('-').next().unwrap());
+    let lychee_dir = PathBuf::from(repo_path).join(".lychee");
+
+    // Create .lychee directory if it doesn't exist
+    if !lychee_dir.exists() {
+        std::fs::create_dir(&lychee_dir).ok()?;
+
+        // Add .lychee to git exclude
+        let git_exclude_path = PathBuf::from(repo_path).join(".git").join("info").join("exclude");
+        if let Ok(mut exclude_content) = std::fs::read_to_string(&git_exclude_path) {
+            if !exclude_content.contains("/.lychee") {
+                exclude_content.push_str("\n/.lychee\n");
+                let _ = std::fs::write(&git_exclude_path, exclude_content);
+            }
+        }
+    }
+
+    // Update session info file (no worktree creation for regular sessions)
+    let session_info_path = lychee_dir.join(".session-info.json");
+    let mut session_info = if session_info_path.exists() {
+        std::fs::read_to_string(&session_info_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<SessionInfoFile>(&s).ok())
+            .unwrap_or_default()
+    } else {
+        SessionInfoFile { sessions: HashMap::new() }
+    };
+
+    session_info.sessions.insert(
+        lychee_id.clone(),
+        SessionMetadata {
+            claude_session_id: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            last_active: chrono::Utc::now().to_rfc3339(),
+            is_worktree: false,
+        },
+    );
+
+    std::fs::write(
+        session_info_path,
+        serde_json::to_string_pretty(&session_info).unwrap(),
+    ).ok()?;
+
+    if debug {
+        println!("✅ Created regular session: {}", lychee_id);
+    }
+
+    Some(lychee_id)
+}
+
+async fn create_worktree_session(repo_path: &str, debug: bool) -> Option<String> {
     let lychee_id = format!("session-{}", Uuid::new_v4().to_string().split('-').next().unwrap());
     let lychee_dir = PathBuf::from(repo_path).join(".lychee");
     let session_dir = lychee_dir.join(&lychee_id);
@@ -562,6 +615,7 @@ async fn create_session(repo_path: &str, debug: bool) -> Option<String> {
             claude_session_id: None,
             created_at: chrono::Utc::now().to_rfc3339(),
             last_active: chrono::Utc::now().to_rfc3339(),
+            is_worktree: true,
         },
     );
 
@@ -581,66 +635,30 @@ async fn load_session_history(repo_path: &str, lychee_id: &str, debug: bool) -> 
     let lychee_dir = PathBuf::from(repo_path).join(".lychee");
     let session_info_path = lychee_dir.join(".session-info.json");
 
-    // Get Claude session ID from mapping
-    let claude_session_id = if session_info_path.exists() {
+    // Get session metadata
+    let metadata = if session_info_path.exists() {
         std::fs::read_to_string(&session_info_path)
             .ok()
             .and_then(|s| serde_json::from_str::<SessionInfoFile>(&s).ok())
             .and_then(|info| info.sessions.get(lychee_id).cloned())
-            .and_then(|metadata| metadata.claude_session_id)
     } else {
         None
     };
 
-    if let Some(claude_id) = claude_session_id {
-        // Claude stores conversations in .claude/projects/ with path-based naming
-        let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    if let Some(ref meta) = metadata {
+        if let Some(ref claude_id) = meta.claude_session_id {
+            // Determine working directory based on session type
+            let is_worktree = meta.is_worktree;
+            let working_dir = if is_worktree {
+                lychee_dir.join(lychee_id)
+            } else {
+                PathBuf::from(repo_path)
+            };
 
-        // Try to find the session file by searching for it
-        // Claude's path sanitization can be complex, so let's search for the file
-        let projects_dir = PathBuf::from(&home_dir).join(".claude").join("projects");
-        let session_filename = format!("{}.jsonl", claude_id);
+            // Find the Claude session file
+            let session_file = find_claude_session_file(&working_dir, claude_id);
 
-        // Search for the session file in any project directory
-        let mut session_file = None;
-
-        if let Ok(entries) = std::fs::read_dir(&projects_dir) {
-            for entry in entries.filter_map(Result::ok) {
-                let dir_path = entry.path();
-                if dir_path.is_dir() {
-                    let possible_file = dir_path.join(&session_filename);
-                    if possible_file.exists() {
-                        // Check if this is related to our lychee session
-                        let dir_name = dir_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                        if dir_name.contains(&lychee_id) {
-                            session_file = Some(possible_file);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        // If we couldn't find it by searching, try the expected path
-        if session_file.is_none() {
-            // Claude sanitizes paths by replacing / with - and handling . specially
-            let session_dir_path = PathBuf::from(repo_path).join(".lychee").join(lychee_id);
-            let path_str = session_dir_path.display().to_string();
-
-            // Replace slashes with dashes, and handle the .lychee part
-            let sanitized = path_str
-                .trim_start_matches('/')
-                .replace("/.", "/-.")  // Preserve dots after slashes
-                .replace('/', "-");
-            let sanitized_path = format!("-{}", sanitized);
-
-            let expected_file = projects_dir.join(&sanitized_path).join(&session_filename);
-            if expected_file.exists() {
-                session_file = Some(expected_file);
-            }
-        }
-
-        if let Some(file_path) = session_file {
+            if let Some(file_path) = session_file {
             if debug {
                 println!("Looking for Claude history at: {:?}", file_path);
             }
@@ -681,9 +699,10 @@ async fn load_session_history(repo_path: &str, lychee_id: &str, debug: bool) -> 
                 }
 
                 return serde_json::json!(messages);
+            } else if debug {
+                println!("⚠️  No Claude session file found for session {}", lychee_id);
             }
-        } else if debug {
-            println!("⚠️  No Claude session file found for session {}", lychee_id);
+            }
         }
     }
 
@@ -707,26 +726,31 @@ async fn spawn_claude(
     state: &AppState,
 ) {
     let lychee_dir = PathBuf::from(repo_path).join(".lychee");
-    let session_dir = lychee_dir.join(lychee_id);
     let session_info_path = lychee_dir.join(".session-info.json");
 
-    // Get existing Claude session ID (if resuming)
-    let existing_session_id = if session_info_path.exists() {
+    // Get session metadata to determine working directory
+    let metadata = if session_info_path.exists() {
         std::fs::read_to_string(&session_info_path)
             .ok()
             .and_then(|s| serde_json::from_str::<SessionInfoFile>(&s).ok())
             .and_then(|info| info.sessions.get(lychee_id).cloned())
-            .and_then(|metadata| metadata.claude_session_id)
     } else {
         None
     };
 
-    let is_resuming_session = existing_session_id.is_some();
-    let mut claude_session_id = existing_session_id;
+    let is_worktree = metadata.as_ref().map(|m| m.is_worktree).unwrap_or(false);
+    let working_dir = if is_worktree {
+        lychee_dir.join(lychee_id)
+    } else {
+        PathBuf::from(repo_path)
+    };
+
+    let is_resuming_session = metadata.as_ref().and_then(|m| m.claude_session_id.as_ref()).is_some();
+    let mut claude_session_id = metadata.as_ref().and_then(|m| m.claude_session_id.clone());
 
     // Build Claude command
     let mut cmd = Command::new("claude");
-    cmd.current_dir(&session_dir);
+    cmd.current_dir(&working_dir);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::null());
 
@@ -828,7 +852,7 @@ async fn spawn_claude(
 
         // Locate the JSONL file once we have a session ID
         if claude_session_id.is_some() && jsonl_file_path.is_none() {
-            if let Some(file) = find_claude_session_file(repo_path, lychee_id, claude_session_id.as_ref().unwrap()) {
+            if let Some(file) = find_claude_session_file(&working_dir, claude_session_id.as_ref().unwrap()) {
                 jsonl_file_path = Some(file);
 
                 // Set baseline: where to start reading from
@@ -1007,12 +1031,30 @@ fn parse_jsonl_entry(line: &str) -> Option<Value> {
  * Find Claude's JSONL file for a session
  * Searches in ~/.claude/projects/ directories
  */
-fn find_claude_session_file(repo_path: &str, lychee_id: &str, claude_session_id: &str) -> Option<PathBuf> {
+fn find_claude_session_file(working_dir: &PathBuf, claude_session_id: &str) -> Option<PathBuf> {
     let home_dir = std::env::var("HOME").ok()?;
     let projects_dir = PathBuf::from(&home_dir).join(".claude").join("projects");
     let session_filename = format!("{}.jsonl", claude_session_id);
 
-    // Search in project directories
+    // Sanitize the working directory path to match Claude's project directory naming
+    let path_str = working_dir.display().to_string();
+    let sanitized = path_str
+        .trim_start_matches('/')
+        .replace('/', "-")
+        .replace('.', "-");
+    let sanitized_path = format!("-{}", sanitized);
+
+    // Try the expected sanitized path first
+    let expected_file = projects_dir.join(&sanitized_path).join(&session_filename);
+    if expected_file.exists() {
+        return Some(expected_file);
+    }
+
+    eprintln!("⚠️  Expected path not found: {:?}", expected_file);
+    eprintln!("🔍 Searching all project directories for session file...");
+
+    // If not found, search through all project directories for a match
+    // This handles cases where Claude's path sanitization differs from ours
     if let Ok(entries) = std::fs::read_dir(&projects_dir) {
         for entry in entries.filter_map(Result::ok) {
             let dir_path = entry.path();
@@ -1022,29 +1064,13 @@ fn find_claude_session_file(repo_path: &str, lychee_id: &str, claude_session_id:
 
             let possible_file = dir_path.join(&session_filename);
             if possible_file.exists() {
-                // Check if this directory is for our lychee session
-                let dir_name = dir_path.file_name()?.to_str()?;
-                if dir_name.contains(lychee_id) {
-                    return Some(possible_file);
-                }
+                eprintln!("✅ Found session file via fallback search: {:?}", possible_file);
+                return Some(possible_file);
             }
         }
     }
 
-    // Try expected path as fallback
-    let session_dir_path = PathBuf::from(repo_path).join(".lychee").join(lychee_id);
-    let path_str = session_dir_path.display().to_string();
-    let sanitized = path_str
-        .trim_start_matches('/')
-        .replace("/.", "/-.")
-        .replace('/', "-");
-    let sanitized_path = format!("-{}", sanitized);
-
-    let expected_file = projects_dir.join(&sanitized_path).join(&session_filename);
-    if expected_file.exists() {
-        return Some(expected_file);
-    }
-
+    eprintln!("❌ Session file not found after exhaustive search");
     None
 }
 

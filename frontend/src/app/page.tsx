@@ -302,7 +302,7 @@ export default function Home() {
               {processedMessages.map((msg) => {
                 if (msg.type === "user") {
                   return (
-                    <div key={msg.id} className="flex justify-end message-fade-in">
+                    <div key={msg.id} className="flex justify-end">
                       <div className="max-w-[75%] rounded-2xl bg-muted px-4 py-3 text-sm leading-relaxed text-foreground shadow-sm whitespace-pre-wrap">
                         {msg.content}
                       </div>
@@ -312,7 +312,6 @@ export default function Home() {
 
                 if (msg.type === "assistant-text") {
                   const isPending = msg.content.trim().length === 0 && isStreaming;
-                  const hasStartedStreaming = msg.content.length > 0 && msg.content.length < 50;
                   return (
                     <div key={msg.id} className="flex justify-start">
                       <div className="w-full">
@@ -322,7 +321,7 @@ export default function Home() {
                             <span className="animate-pulse">Claude is thinking...</span>
                           </div>
                         ) : (
-                          <div className={hasStartedStreaming ? "message-fade-in" : ""}>
+                          <div>
                             <MarkdownRenderer content={msg.content} className="text-sm leading-relaxed" />
                           </div>
                         )}
@@ -333,7 +332,7 @@ export default function Home() {
 
                 if (msg.type === "worklog" && msg.worklogItems) {
                   return (
-                    <div key={msg.id} className="flex justify-start message-fade-in">
+                    <div key={msg.id} className="flex justify-start">
                       <div className="w-full max-w-2xl">
                         <WorklogSection
                           items={msg.worklogItems}
@@ -350,7 +349,7 @@ export default function Home() {
 
                 if (msg.type === "system") {
                   return (
-                    <div key={msg.id} className="flex justify-center message-fade-in">
+                    <div key={msg.id} className="flex justify-center">
                       <div className="max-w-[80%] rounded-2xl border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm leading-relaxed text-yellow-800 shadow-sm whitespace-pre-wrap">
                         {msg.content}
                       </div>

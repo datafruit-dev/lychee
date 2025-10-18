@@ -9,6 +9,7 @@ interface SessionInfoPanelProps {
   repoName: string;
   sessionId: string;
   branchOrigin?: string;
+  isWorktree?: boolean;
 }
 
 export default function SessionInfoPanel({
@@ -17,6 +18,7 @@ export default function SessionInfoPanel({
   repoName,
   sessionId,
   branchOrigin = "origin/main",
+  isWorktree = false,
 }: SessionInfoPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -26,7 +28,7 @@ export default function SessionInfoPanel({
   return (
     <div
       ref={panelRef}
-      className="session-info-panel bg-background border-b border-border"
+      className="session-info-panel bg-background border-b border-border animate-panel-fade-in"
       style={{
         height: '33vh',
         minHeight: '280px',
@@ -59,15 +61,30 @@ export default function SessionInfoPanel({
 
           {/* Details */}
           <div className="space-y-2 text-sm text-muted-foreground">
-            <p className="flex items-center gap-2">
-              <span className="w-1 h-1 rounded-full bg-primary/40" />
-              Branched <code className="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">{sessionId}</code> from{' '}
-              <code className="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">{branchOrigin}</code>
-            </p>
-            <p className="flex items-center gap-2">
-              <span className="w-1 h-1 rounded-full bg-primary/40" />
-              Created <code className="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">.lychee/{sessionId}</code>
-            </p>
+            {isWorktree ? (
+              <>
+                <p className="flex items-center gap-2">
+                  <span className="w-1 h-1 rounded-full bg-primary/40" />
+                  Branched <code className="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">{sessionId}</code> from{' '}
+                  <code className="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">{branchOrigin}</code>
+                </p>
+                <p className="flex items-center gap-2">
+                  <span className="w-1 h-1 rounded-full bg-primary/40" />
+                  Created <code className="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">.lychee/{sessionId}</code>
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="flex items-center gap-2">
+                  <span className="w-1 h-1 rounded-full bg-primary/40" />
+                  Direct session on current branch
+                </p>
+                <p className="flex items-center gap-2">
+                  <span className="w-1 h-1 rounded-full bg-primary/40" />
+                  Working in main repository
+                </p>
+              </>
+            )}
           </div>
 
           {/* Repo badge */}

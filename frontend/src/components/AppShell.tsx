@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useState, useEffect, createContext, useContext } from "react";
+import { ReactNode, useState, useEffect, useRef, createContext, useContext } from "react";
 import Sidebar from "./Sidebar";
 import RightSidebar from "./RightSidebar";
 import TopBar from "./TopBar";
@@ -52,6 +52,34 @@ export default function AppShell({ children }: AppShellProps) {
 
   const activeRepo = sessions.repos.find((repo) => repo.path === sessions.activeRepoPath) || null;
 
+  const prevSessionIdRef = useRef<string | null>(null);
+
+  // Reset panel to closed when session changes
+  useEffect(() => {
+    if (sessions.currentSessionId !== prevSessionIdRef.current) {
+      prevSessionIdRef.current = sessions.currentSessionId;
+      setIsPanelOpen(false);
+    }
+  }, [sessions.currentSessionId]);
+
+  // Open panel if session is empty (after messages load)
+  useEffect(() => {
+    if (sessions.currentSessionId && sessions.messages.length === 0) {
+      const timer = setTimeout(() => {
+        setIsPanelOpen(true);
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [sessions.currentSessionId, sessions.messages.length]);
+
+  // Wrap sendChatMessage to close panel when user sends message
+  const handleSendMessage = (message: string) => {
+    sessions.sendChatMessage(message);
+    setIsPanelOpen(false);
+  };
+
+  const handleTogglePanel = () => setIsPanelOpen(!isPanelOpen);
+
   useEffect(() => {
     try {
       const stored = localStorage.getItem('lychee-sidebar-collapsed');
@@ -82,6 +110,7 @@ export default function AppShell({ children }: AppShellProps) {
 
   const contextValue: AppShellContextValue = {
     ...sessions,
+    sendChatMessage: handleSendMessage,
     selectedToolCall,
     setSelectedToolCall,
     isRightSidebarOpen,
@@ -101,7 +130,7 @@ export default function AppShell({ children }: AppShellProps) {
           rightSidebarWidth={rightSidebarWidth}
           isResizingRightSidebar={isResizingRightSidebar}
           isPanelOpen={isPanelOpen}
-          onTogglePanel={() => setIsPanelOpen(!isPanelOpen)}
+          onTogglePanel={handleTogglePanel}
         />
 
         <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -111,6 +140,7 @@ export default function AppShell({ children }: AppShellProps) {
             currentSessionId={sessions.currentSessionId}
             onSelectSession={sessions.selectSession}
             onNewSession={sessions.createSession}
+            onNewWorktreeSession={sessions.createWorktreeSession}
             creatingSessionForRepo={sessions.creatingSessionForRepo}
             isCreatingSession={sessions.isCreatingSession}
             isCollapsed={isCollapsed}
@@ -126,6 +156,9 @@ export default function AppShell({ children }: AppShellProps) {
                 repoName={activeRepo.name}
                 sessionId={sessions.currentSessionId}
                 branchOrigin="origin/main"
+                isWorktree={
+                  activeRepo.sessions.find(s => s.lychee_id === sessions.currentSessionId)?.is_worktree ?? false
+                }
               />
             )}
 

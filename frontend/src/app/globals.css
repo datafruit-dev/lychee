@@ -193,37 +193,20 @@
   font-family: var(--font-mono);
 }
 
-/* Chat message animations */
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+/* Chat message animations - disabled for instant loading */
+.message-fade-in {
+  /* No animation */
 }
 
-/* Simple fade animation for dropdown */
-@keyframes simpleFadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+.thinking-indicator {
+  /* No animation */
 }
 
-.animate-fade-in {
-  animation: simpleFadeIn 0.3s ease-in-out;
+.thinking-fade-out {
+  /* No animation */
 }
 
-/* Session panel animations */
-.session-info-panel {
-  animation: panelFadeIn 0.2s ease-out;
-}
-
+/* Panel fade-in animation */
 @keyframes panelFadeIn {
   from {
     opacity: 0;
@@ -233,29 +216,8 @@
   }
 }
 
-.session-panel-container {
-  position: relative;
-}
-
-@keyframes fadeOut {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-  }
-}
-
-.message-fade-in {
-  animation: fadeIn 0.3s ease-out forwards;
-}
-
-.thinking-indicator {
-  animation: fadeIn 0.2s ease-out;
-}
-
-.thinking-fade-out {
-  animation: fadeOut 0.2s ease-out forwards;
+.animate-panel-fade-in {
+  animation: panelFadeIn 0.2s ease-out;
 }
 
 @layer base {
