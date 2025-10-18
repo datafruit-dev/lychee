@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSessionsContext } from "@/components/AppShell";
 import ChatComposer from "@/components/ChatComposer";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
@@ -206,6 +206,81 @@ function processMessages(messages: ChatMessage[]): ProcessedMessage[] {
   return result;
 }
 
+// ============================================================================
+// THINKING TIMER HOOK - Track elapsed time while Claude is thinking
+// ============================================================================
+
+/**
+ * Custom hook to track and display elapsed time while Claude is thinking
+ * Persists timers to localStorage for refresh resilience
+ */
+function useThinkingTimer(sessionId: string | null, isStreaming: boolean) {
+  const [elapsedTime, setElapsedTime] = useState<number>(0);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const startTimeRef = useRef<number | null>(null);
+
+  // localStorage key for persistence
+  const STORAGE_KEY = "lychee_thinking_timers";
+
+  useEffect(() => {
+    if (isStreaming && sessionId) {
+      // Load or create start time
+      const stored = localStorage.getItem(STORAGE_KEY);
+      const timers = stored ? JSON.parse(stored) : {};
+
+      let startTime = timers[sessionId];
+      if (!startTime) {
+        startTime = Date.now();
+        timers[sessionId] = startTime;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(timers));
+      }
+
+      startTimeRef.current = startTime;
+
+      // Update timer every 100ms for smooth decimal display
+      const updateTimer = () => {
+        if (startTimeRef.current) {
+          setElapsedTime((Date.now() - startTimeRef.current) / 1000);
+        }
+      };
+
+      // Update immediately
+      updateTimer();
+
+      // Then update every 100ms
+      intervalRef.current = setInterval(updateTimer, 100);
+    } else {
+      // Stop timer and clean up
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+
+      // Remove from localStorage when streaming ends
+      if (sessionId && !isStreaming) {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          const timers = JSON.parse(stored);
+          delete timers[sessionId];
+          if (Object.keys(timers).length === 0) {
+            localStorage.removeItem(STORAGE_KEY);
+          } else {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(timers));
+          }
+        }
+      }
+
+      setElapsedTime(0);
+    }
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [sessionId, isStreaming]);
+
+  return elapsedTime > 0 ? ` ${elapsedTime.toFixed(1)}s` : "";
+}
+
 export default function Home() {
   const { setSelectedToolCall, selectedToolCall, ...sessions } = useSessionsContext();
 
@@ -217,6 +292,9 @@ export default function Home() {
   const messageContainerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
   const lastMessageCountRef = useRef(0);
+
+  // Use the thinking timer hook
+  const thinkingTimer = useThinkingTimer(sessions.currentSessionId, isStreaming);
 
   // Process messages to extract tool calls and filter sidechains
   const processedMessages = useMemo(
@@ -291,7 +369,7 @@ export default function Home() {
               {isStreaming ? (
                 <div className="thinking-indicator flex items-center justify-center gap-2">
                   <span className="h-2 w-2 animate-pulse rounded-full bg-primary/70" />
-                  <span className="animate-pulse">Claude is thinking...</span>
+                  <span className="animate-pulse">Claude is thinking...{thinkingTimer}</span>
                 </div>
               ) : !activeRepo && sessions.repos.length === 0 ? (
                 <p className="text-sm">Run `lychee up` in a repository to connect.</p>
@@ -318,7 +396,7 @@ export default function Home() {
                         {isPending ? (
                           <div className="thinking-indicator flex items-center gap-2 text-muted-foreground">
                             <span className="h-2 w-2 animate-pulse rounded-full bg-primary/70" />
-                            <span className="animate-pulse">Claude is thinking...</span>
+                            <span className="animate-pulse">Claude is thinking...{thinkingTimer}</span>
                           </div>
                         ) : (
                           <div>
@@ -365,7 +443,7 @@ export default function Home() {
                 <div className="flex justify-start">
                   <div className="thinking-indicator flex items-center gap-2 text-muted-foreground">
                     <span className="h-2 w-2 animate-pulse rounded-full bg-primary/70" />
-                    <span className="animate-pulse">Claude is thinking...</span>
+                    <span className="animate-pulse">Claude is thinking...{thinkingTimer}</span>
                   </div>
                 </div>
               )}

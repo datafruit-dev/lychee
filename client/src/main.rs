@@ -761,6 +761,7 @@ async fn spawn_claude(
     cmd.arg("-p").arg(content);
     cmd.arg("--model").arg(model);
     cmd.arg("--output-format").arg("stream-json");
+    cmd.arg("--dangerously-skip-permissions");
 
     if state.debug {
         println!("🚀 Spawning Claude for session {}", lychee_id);
