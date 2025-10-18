@@ -10,7 +10,6 @@ interface TopBarProps {
   onToggleSidebar: () => void;
   activeRepo: RepoInfo | null;
   currentSessionId: string | null;
-  isStreaming: boolean;
   isRightSidebarOpen: boolean;
   onToggleRightSidebar: () => void;
   rightSidebarWidth: number;
@@ -24,7 +23,6 @@ export default function TopBar({
   onToggleSidebar,
   activeRepo,
   currentSessionId,
-  isStreaming,
   isRightSidebarOpen,
   onToggleRightSidebar,
   rightSidebarWidth,

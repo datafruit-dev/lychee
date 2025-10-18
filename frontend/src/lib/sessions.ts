@@ -25,8 +25,6 @@ export type ChatMessage = {
   parentUuid?: string;
   uuid?: string;
   timestamp?: string;
-  // For streaming: length of text when tools first appeared
-  textLengthAtTools?: number;
 };
 
 export interface SessionInfo {
@@ -48,9 +46,12 @@ type ConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error";
 type RelayInboundMessage =
   | { type: "client_connected"; repo_path: string; repo_name: string }
   | { type: "client_disconnected"; repo_path: string }
-  | { type: "sessions_list"; repo_path: string; sessions?: SessionInfo[] }
+  | { type: "sessions_list"; repo_path: string; sessions?: SessionInfo[]; active_session_ids?: string[] }
   | { type: "session_created"; repo_path: string; lychee_id: string }
   | { type: "session_history"; repo_path: string; lychee_id: string; messages?: ChatMessage[] }
+  | { type: "session_update"; repo_path: string; lychee_id: string; new_entries?: ChatMessage[] }
+  | { type: "stream_start"; repo_path: string; lychee_id: string }
+  | { type: "stream_end"; repo_path: string; lychee_id: string }
   | { type: "claude_stream"; repo_path: string; lychee_id: string; data: unknown }
   | { type: "client_count"; count: number }
   | { type: "error"; repo_path?: string | null; message: string };
@@ -94,9 +95,6 @@ class SessionsService {
   private ws: WebSocket | null = null;
   private reconnectTimeout: number | null = null;
   private readonly wsUrl: string;
-  private streamBuffers: Record<string, string> = {};
-  // Track text length when first tool appears for each session
-  private textSnapshotAtTools: Record<string, number> = {};
 
   constructor() {
     this.wsUrl = (typeof process !== "undefined" && process.env.NEXT_PUBLIC_WS_URL) || "ws://localhost:3001/ws";
@@ -171,7 +169,18 @@ class SessionsService {
       return;
     }
 
-    const userMessage: ChatMessage = { role: "user", content: trimmed };
+    // Optimistically add user message for immediate feedback
+    // Use temp UUID so we can deduplicate when real message arrives from file
+    const userMessage: ChatMessage = {
+      role: "user",
+      content: trimmed,
+      uuid: `temp-${Date.now()}-${Math.random()}`
+    };
+
+    // Store pending message in localStorage for refresh recovery
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(`pending-message-${currentSessionId}`, trimmed);
+    }
 
     this.updateState((prev) => ({
       ...prev,
@@ -286,27 +295,36 @@ class SessionsService {
 
       case "sessions_list": {
         const sessions = message.sessions ?? [];
-        this.updateState((prev) => ({
-          ...prev,
-          repos: prev.repos.map((repo) =>
-            repo.path === message.repo_path
-              ? {
-                  ...repo,
-                  sessions: sessions
-                    .slice()
-                    .sort(
-                      (a, b) =>
-                        new Date(b.last_active).getTime() -
-                        new Date(a.last_active).getTime()
-                    )
-                    .map((session) => ({
-                      ...session,
-                      isStreaming: prev.activeStreams.has(session.lychee_id),
-                    })),
-                }
-              : repo
-          ),
-        }));
+        const activeSessionIds = message.active_session_ids ?? [];
+
+        this.updateState((prev) => {
+          // Merge active session IDs from message with existing activeStreams
+          const activeStreams = new Set(prev.activeStreams);
+          activeSessionIds.forEach(id => activeStreams.add(id));
+
+          return {
+            ...prev,
+            activeStreams,
+            repos: prev.repos.map((repo) =>
+              repo.path === message.repo_path
+                ? {
+                    ...repo,
+                    sessions: sessions
+                      .slice()
+                      .sort(
+                        (a, b) =>
+                          new Date(b.last_active).getTime() -
+                          new Date(a.last_active).getTime()
+                      )
+                      .map((session) => ({
+                        ...session,
+                        isStreaming: activeStreams.has(session.lychee_id),
+                      })),
+                  }
+                : repo
+            ),
+          };
+        });
         break;
       }
 
@@ -330,16 +348,122 @@ class SessionsService {
             return prev;
           }
 
+          const loadedMessages = message.messages ?? [];
+
+          // Handle pending messages: User sent a message but refreshed before Claude wrote it to disk
+          // We store the message in localStorage so it doesn't disappear on refresh
+          const pendingKey = `pending-message-${message.lychee_id}`;
+          const pendingMessage = typeof localStorage !== "undefined"
+            ? localStorage.getItem(pendingKey)
+            : null;
+
+          let finalMessages = loadedMessages;
+          if (pendingMessage) {
+            // Check if the pending message is already in the file
+            const isPendingInFile = loadedMessages.some(msg =>
+              msg.role === "user" &&
+              (typeof msg.content === "string" ? msg.content : "") === pendingMessage
+            );
+
+            if (!isPendingInFile) {
+              // Still pending - add it as a temp message so user sees what they sent
+              finalMessages = [
+                ...loadedMessages,
+                {
+                  role: "user",
+                  content: pendingMessage,
+                  uuid: `temp-pending-${message.lychee_id}`
+                }
+              ];
+            } else {
+              // It's in the file now - clean up localStorage
+              localStorage.removeItem(pendingKey);
+            }
+          }
+
           return {
             ...prev,
-            messages: message.messages ?? [],
+            messages: finalMessages,
           };
         });
         break;
       }
 
-      case "claude_stream": {
-        this.handleClaudeStream(message.lychee_id, message.data);
+      case "session_update": {
+        this.updateState((prev) => {
+          if (prev.currentSessionId !== message.lychee_id) {
+            return prev;
+          }
+
+          const newEntries = message.new_entries ?? [];
+          const hasUserMessage = newEntries.some(e => e.role === "user");
+
+          // Deduplication: Prevent showing the same message twice
+          // This happens because:
+          // 1. User sends message → we add it optimistically with temp UUID
+          // 2. File watcher reads it from disk → sends as real message
+          // Solution: Remove all temp user messages when real user message arrives
+
+          const withoutTempDupes = prev.messages.filter(existing => {
+            if (!existing.uuid?.startsWith("temp-")) return true;
+            if (hasUserMessage && existing.role === "user") return false;
+            return true;
+          });
+
+          // Clean up localStorage now that message is in the file
+          if (hasUserMessage && typeof localStorage !== "undefined") {
+            localStorage.removeItem(`pending-message-${message.lychee_id}`);
+          }
+
+          // Extra safety: deduplicate incoming entries against existing messages
+          // Handles edge case where file watcher might send same entry twice
+          const existingContents = new Set(
+            withoutTempDupes
+              .filter(m => m.role === "user" && !m.uuid?.startsWith("temp-"))
+              .map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content))
+          );
+
+          const finalEntries = newEntries.filter(entry => {
+            if (entry.role !== "user") return true;
+
+            const entryContent = typeof entry.content === "string"
+              ? entry.content
+              : JSON.stringify(entry.content);
+
+            return !existingContents.has(entryContent);
+          });
+
+          return {
+            ...prev,
+            messages: [...withoutTempDupes, ...finalEntries],
+          };
+        });
+        break;
+      }
+
+      case "stream_start": {
+        this.updateState((prev) => {
+          const activeStreams = new Set(prev.activeStreams).add(message.lychee_id);
+
+          return {
+            ...prev,
+            activeStreams,
+            repos: this.updateStreamingFlags(prev.repos, activeStreams),
+          };
+        });
+        break;
+      }
+
+      case "stream_end": {
+        this.updateState((prev) => {
+          const activeStreams = new Set(prev.activeStreams);
+          activeStreams.delete(message.lychee_id);
+          return {
+            ...prev,
+            activeStreams,
+            repos: this.updateStreamingFlags(prev.repos, activeStreams),
+          };
+        });
         break;
       }
 
@@ -361,129 +485,6 @@ class SessionsService {
       case "client_count":
       default:
         break;
-    }
-  }
-
-  private handleClaudeStream(lycheeId: string, data: unknown) {
-    const streamType = (data as {type?: string})?.type;
-    if (!streamType) return;
-
-    if (streamType === "init" || streamType === "system") {
-      this.streamBuffers[lycheeId] = "";
-      delete this.textSnapshotAtTools[lycheeId]; // Reset snapshot for new stream
-      this.updateState((prev) => {
-        const activeStreams = new Set(prev.activeStreams).add(lycheeId);
-        return {
-          ...prev,
-          activeStreams,
-          repos: this.updateStreamingFlags(prev.repos, activeStreams),
-        };
-      });
-      return;
-    }
-
-    if (streamType === "assistant") {
-      const dataObj = data as {message?: {content?: unknown}};
-      const contentBlocks = Array.isArray(dataObj?.message?.content)
-        ? dataObj.message.content
-        : [];
-
-      this.updateState((prev) => {
-        if (prev.currentSessionId !== lycheeId) {
-          return prev;
-        }
-
-        const messages = [...prev.messages];
-        const last = messages[messages.length - 1];
-
-        // Check if we should update existing message or create new one
-        if (last && last.role === "assistant") {
-          // Update existing assistant message with new content blocks
-          const existingContent = Array.isArray(last.content) ? last.content : [];
-
-          // Merge content blocks - combine text, append tool_use
-          const mergedContent = [...existingContent];
-
-          contentBlocks.forEach((newBlock: unknown) => {
-            const block = newBlock as {type?: string; text?: string; id?: string};
-            if (block.type === "text") {
-              // Find existing text block and update it, or append
-              const textIndex = mergedContent.findIndex((b: unknown) => (b as {type?: string}).type === "text");
-              if (textIndex >= 0) {
-                const existingText = (mergedContent[textIndex] as {text?: string}).text || "";
-                mergedContent[textIndex] = {
-                  type: "text",
-                  text: existingText + (block.text || "")
-                } as ClaudeTextBlock;
-              } else {
-                mergedContent.push(block as ClaudeTextBlock);
-              }
-            } else if (block.type === "tool_use") {
-              // Capture text length when first tool appears
-              if (!last.textLengthAtTools && mergedContent.some((b: unknown) => (b as {type?: string}).type === "text")) {
-                const textBlock = mergedContent.find((b: unknown) => (b as {type?: string}).type === "text") as {text?: string};
-                const currentTextLength = textBlock?.text?.length || 0;
-                // Will set this on the message below
-                this.textSnapshotAtTools[lycheeId] = currentTextLength;
-              }
-
-              // Only add tool_use if not already present (check by id)
-              const exists = mergedContent.some((b: unknown) =>
-                (b as {type?: string; id?: string}).type === "tool_use" && (b as {id?: string}).id === block.id
-              );
-              if (!exists) {
-                mergedContent.push(block as ClaudeToolUse);
-              }
-            } else {
-              // Other block types - just append if not duplicate
-              mergedContent.push(block as ClaudeTextBlock);
-            }
-          });
-
-          messages[messages.length - 1] = {
-            ...last,
-            content: mergedContent,
-            textLengthAtTools: this.textSnapshotAtTools[lycheeId]
-          };
-        } else {
-          // Create new assistant message
-          messages.push({ role: "assistant", content: contentBlocks });
-        }
-
-        return {
-          ...prev,
-          messages,
-        };
-      });
-      return;
-    }
-
-    if (streamType === "result" || streamType === "error") {
-      delete this.streamBuffers[lycheeId];
-      delete this.textSnapshotAtTools[lycheeId]; // Clean up snapshot
-      this.updateState((prev) => {
-        const activeStreams = new Set(prev.activeStreams);
-        activeStreams.delete(lycheeId);
-        return {
-          ...prev,
-          activeStreams,
-          repos: this.updateStreamingFlags(prev.repos, activeStreams),
-        };
-      });
-
-      if (streamType === "error") {
-        const errorMessage = (data as {message?: string})?.message;
-        if (errorMessage && this.state.currentSessionId === lycheeId) {
-          const systemMessage: ChatMessage = {
-            role: "system",
-            content: `Error: ${errorMessage}`,
-          };
-          this.updateState((prev) => ({
-            ...prev,
-            messages: [...prev.messages, systemMessage],
-          }));
-        }
-      }
     }
   }
 

@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::{stdout, Write as IoWrite};
+use std::io::{stdout, Write as IoWrite, BufRead};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -63,6 +63,7 @@ enum Message {
     SessionsList {
         repo_path: String,
         sessions: Vec<SessionInfo>,
+        active_session_ids: Option<Vec<String>>,
     },
     #[serde(rename = "session_created")]
     SessionCreated {
@@ -74,6 +75,22 @@ enum Message {
         repo_path: String,
         lychee_id: String,
         messages: Value,
+    },
+    #[serde(rename = "session_update")]
+    SessionUpdate {
+        repo_path: String,
+        lychee_id: String,
+        new_entries: Value,
+    },
+    #[serde(rename = "stream_start")]
+    StreamStart {
+        repo_path: String,
+        lychee_id: String,
+    },
+    #[serde(rename = "stream_end")]
+    StreamEnd {
+        repo_path: String,
+        lychee_id: String,
     },
     #[serde(rename = "claude_stream")]
     ClaudeStream {
@@ -322,10 +339,23 @@ async fn handle_message(
 ) {
     match msg {
         Message::ListSessions { .. } => {
+            // Get list of currently streaming sessions
+            let active_session_ids = {
+                let processes = state.active_processes.read().await;
+                processes.keys().cloned().collect::<Vec<_>>()
+            };
+
+            // Send sessions list with active sessions included in same message
+            // This avoids race conditions with separate stream_start messages
             let sessions = list_sessions(repo_path).await;
             let response = Message::SessionsList {
                 repo_path: repo_path.to_string(),
                 sessions,
+                active_session_ids: if active_session_ids.is_empty() {
+                    None
+                } else {
+                    Some(active_session_ids)
+                },
             };
             let _ = tx.send(serde_json::to_string(&response).unwrap());
         }
@@ -344,10 +374,24 @@ async fn handle_message(
             let messages = load_session_history(repo_path, &lychee_id, state.debug).await;
             let response = Message::SessionHistory {
                 repo_path: repo_path.to_string(),
-                lychee_id,
+                lychee_id: lychee_id.clone(),
                 messages,
             };
             let _ = tx.send(serde_json::to_string(&response).unwrap());
+
+            // If this session is currently streaming, send stream_start to restore state
+            let is_active = {
+                let processes = state.active_processes.read().await;
+                processes.contains_key(&lychee_id)
+            };
+
+            if is_active {
+                let start_msg = Message::StreamStart {
+                    repo_path: repo_path.to_string(),
+                    lychee_id,
+                };
+                let _ = tx.send(serde_json::to_string(&start_msg).unwrap());
+            }
         }
 
         Message::SendMessage {
@@ -385,6 +429,7 @@ async fn handle_message(
                     let update_msg = Message::SessionsList {
                         repo_path: repo_path.to_string(),
                         sessions,
+                        active_session_ids: None,
                     };
                     let _ = tx.send(serde_json::to_string(&update_msg).unwrap());
                 }
@@ -646,6 +691,13 @@ async fn load_session_history(repo_path: &str, lychee_id: &str, debug: bool) -> 
     serde_json::json!([])
 }
 
+/**
+ * Spawn Claude and watch the JSONL file for updates
+ *
+ * Strategy: Use Claude's stdout events as triggers to check the JSONL file
+ * The file is the source of truth - we only read from disk, never parse stdout content
+ * This eliminates streaming/loading collisions
+ */
 async fn spawn_claude(
     tx: mpsc::UnboundedSender<String>,
     repo_path: &str,
@@ -658,8 +710,8 @@ async fn spawn_claude(
     let session_dir = lychee_dir.join(lychee_id);
     let session_info_path = lychee_dir.join(".session-info.json");
 
-    // Get Claude session ID if it exists
-    let claude_session_id = if session_info_path.exists() {
+    // Get existing Claude session ID (if resuming)
+    let existing_session_id = if session_info_path.exists() {
         std::fs::read_to_string(&session_info_path)
             .ok()
             .and_then(|s| serde_json::from_str::<SessionInfoFile>(&s).ok())
@@ -669,37 +721,32 @@ async fn spawn_claude(
         None
     };
 
-    // Build command
+    let is_resuming_session = existing_session_id.is_some();
+    let mut claude_session_id = existing_session_id;
+
+    // Build Claude command
     let mut cmd = Command::new("claude");
     cmd.current_dir(&session_dir);
     cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::null());
 
-    // If we have a Claude session, use --resume with the session ID
-    // --continue won't work because each worktree is a different directory
     if let Some(ref claude_id) = claude_session_id {
-        cmd.arg("--resume");
-        cmd.arg(claude_id);
+        cmd.arg("--resume").arg(claude_id);
     }
 
-    cmd.arg("-p");
-    cmd.arg(content);
-    cmd.arg("--model");
-    cmd.arg(model);
-    cmd.arg("--output-format");
-    cmd.arg("stream-json");
+    cmd.arg("-p").arg(content);
+    cmd.arg("--model").arg(model);
+    cmd.arg("--output-format").arg("stream-json");
 
     if state.debug {
         println!("🚀 Spawning Claude for session {}", lychee_id);
         println!("   Model: {}", model);
         if let Some(ref id) = claude_session_id {
             println!("   Resuming Claude session: {}", id);
-        } else {
-            println!("   Starting new Claude conversation");
         }
     }
 
-    // Spawn process
+    // Spawn Claude
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
@@ -725,7 +772,7 @@ async fn spawn_claude(
     };
     let mut reader = BufReader::new(stdout).lines();
 
-    // Store process
+    // Store process in active list
     {
         let mut processes = state.active_processes.write().await;
         processes.insert(lychee_id.to_string(), child);
@@ -733,67 +780,130 @@ async fn spawn_claude(
 
     let lychee_id_str = lychee_id.to_string();
     let repo_path_str = repo_path.to_string();
-    let mut new_claude_id = None;
 
-    // Stream output (not spawned, handle inline)
+    // Notify frontend that streaming has started
+    let start_msg = Message::StreamStart {
+        repo_path: repo_path_str.clone(),
+        lychee_id: lychee_id_str.clone(),
+    };
+    let _ = tx.send(serde_json::to_string(&start_msg).unwrap());
+
+    // File watching setup: Use stdout events as triggers to check the JSONL file
+    // We don't parse stdout content - just use it to know when to check the file
+    let mut jsonl_file_path: Option<PathBuf> = None;
+    let mut last_line_count: usize = 0;
+
+    // Watch stdout for events - each event triggers a file check
     while let Ok(Some(line)) = reader.next_line().await {
         if line.trim().is_empty() {
             continue;
         }
 
-        if let Ok(data) = serde_json::from_str::<Value>(&line) {
-            // Extract session ID from system or init message
-            if data.get("type") == Some(&serde_json::json!("system")) ||
-               data.get("type") == Some(&serde_json::json!("init")) {
+        // New sessions need to extract the session ID from Claude's first message
+        if claude_session_id.is_none() {
+            if let Ok(data) = serde_json::from_str::<Value>(&line) {
                 if let Some(session_id) = data.get("session_id").and_then(|v| v.as_str()) {
-                    new_claude_id = Some(session_id.to_string());
+                    claude_session_id = Some(session_id.to_string());
+
+                    // Save session ID to metadata
+                    if let Some(mut info) = std::fs::read_to_string(&session_info_path)
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<SessionInfoFile>(&s).ok())
+                    {
+                        if let Some(metadata) = info.sessions.get_mut(&lychee_id_str) {
+                            metadata.claude_session_id = Some(session_id.to_string());
+                            let _ = std::fs::write(
+                                &session_info_path,
+                                serde_json::to_string_pretty(&info).unwrap(),
+                            );
+                        }
+                    }
+
                     if state.debug {
                         println!("📝 Got Claude session ID: {}", session_id);
                     }
                 }
             }
+        }
 
-            // Forward to browser
-            let msg = Message::ClaudeStream {
-                repo_path: repo_path_str.clone(),
-                lychee_id: lychee_id_str.clone(),
-                data,
-            };
-            let _ = tx.send(serde_json::to_string(&msg).unwrap());
+        // Locate the JSONL file once we have a session ID
+        if claude_session_id.is_some() && jsonl_file_path.is_none() {
+            if let Some(file) = find_claude_session_file(repo_path, lychee_id, claude_session_id.as_ref().unwrap()) {
+                jsonl_file_path = Some(file);
+
+                // Set baseline: where to start reading from
+                // Resuming: skip old messages (start from current file size)
+                // New session: send everything (start from line 0)
+                if is_resuming_session {
+                    if let Ok(count) = count_file_lines(&jsonl_file_path.as_ref().unwrap()) {
+                        last_line_count = count;
+                    }
+                } else {
+                    last_line_count = 0;
+                }
+
+                if state.debug {
+                    println!("📁 Found JSONL file, baseline: {} lines (resuming: {})", last_line_count, is_resuming_session);
+                }
+            }
+        }
+
+        // Stdout event triggered - check if file has new content
+        if let Some(ref file_path) = jsonl_file_path {
+            send_incremental_update(
+                file_path,
+                &mut last_line_count,
+                &tx,
+                &repo_path_str,
+                &lychee_id_str,
+                state.debug
+            );
         }
     }
 
-    // Update session info when Claude finishes
-    let mut sessions_updated = false;
+    // Final check after Claude exits (file might have buffered writes)
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    if let Some(ref file_path) = jsonl_file_path {
+        send_incremental_update(
+            file_path,
+            &mut last_line_count,
+            &tx,
+            &repo_path_str,
+            &lychee_id_str,
+            state.debug
+        );
+    }
+
+    // Update metadata
     if let Some(mut info) = std::fs::read_to_string(&session_info_path)
         .ok()
         .and_then(|s| serde_json::from_str::<SessionInfoFile>(&s).ok())
     {
         if let Some(metadata) = info.sessions.get_mut(&lychee_id_str) {
-            // Update Claude session ID if we got a new one
-            if let Some(claude_id) = new_claude_id {
-                metadata.claude_session_id = Some(claude_id);
-            }
-            // Update last_active when response completes
             metadata.last_active = chrono::Utc::now().to_rfc3339();
-
             let _ = std::fs::write(
                 &session_info_path,
                 serde_json::to_string_pretty(&info).unwrap(),
             );
-            sessions_updated = true;
         }
     }
 
-    // Send updated sessions list to frontend
-    if sessions_updated {
-        let sessions = list_sessions(&repo_path_str).await;
-        let update_msg = Message::SessionsList {
-            repo_path: repo_path_str.clone(),
-            sessions,
-        };
-        let _ = tx.send(serde_json::to_string(&update_msg).unwrap());
-    }
+    // Send updated sessions list
+    let sessions = list_sessions(&repo_path_str).await;
+    let update_msg = Message::SessionsList {
+        repo_path: repo_path_str.clone(),
+        sessions,
+        active_session_ids: None,
+    };
+    let _ = tx.send(serde_json::to_string(&update_msg).unwrap());
+
+    // Notify frontend that streaming has ended
+    let end_msg = Message::StreamEnd {
+        repo_path: repo_path_str.clone(),
+        lychee_id: lychee_id_str.clone(),
+    };
+    let _ = tx.send(serde_json::to_string(&end_msg).unwrap());
 
     // Remove from active processes
     {
@@ -804,6 +914,138 @@ async fn spawn_claude(
     if state.debug {
         println!("✅ Claude finished for session {}", lychee_id_str);
     }
+}
+
+/**
+ * Count number of lines in a file
+ */
+fn count_file_lines(file_path: &PathBuf) -> std::io::Result<usize> {
+    let file = std::fs::File::open(file_path)?;
+    let reader = std::io::BufReader::new(file);
+    Ok(reader.lines().count())
+}
+
+/**
+ * Send incremental update with new JSONL entries since last check
+ */
+fn send_incremental_update(
+    file_path: &PathBuf,
+    last_line_count: &mut usize,
+    tx: &mpsc::UnboundedSender<String>,
+    repo_path: &str,
+    lychee_id: &str,
+    debug: bool,
+) {
+    // Read all lines from file
+    let file = match std::fs::File::open(file_path) {
+        Ok(f) => f,
+        Err(_) => return, // File not ready yet
+    };
+
+    let all_lines: Vec<String> = std::io::BufReader::new(file)
+        .lines()
+        .filter_map(Result::ok)
+        .collect();
+
+    let current_count = all_lines.len();
+
+    // No new lines
+    if current_count <= *last_line_count {
+        return;
+    }
+
+    if debug {
+        println!("📥 Reading {} new lines (total: {})", current_count - *last_line_count, current_count);
+    }
+
+    // Parse new entries
+    let new_entries: Vec<Value> = all_lines[*last_line_count..]
+        .iter()
+        .filter_map(|line| parse_jsonl_entry(line))
+        .collect();
+
+    if !new_entries.is_empty() {
+        let update = Message::SessionUpdate {
+            repo_path: repo_path.to_string(),
+            lychee_id: lychee_id.to_string(),
+            new_entries: serde_json::json!(new_entries),
+        };
+        let _ = tx.send(serde_json::to_string(&update).unwrap());
+    }
+
+    *last_line_count = current_count;
+}
+
+/**
+ * Parse a single JSONL line into a message entry
+ * Preserves isSidechain flag for frontend filtering
+ */
+fn parse_jsonl_entry(line: &str) -> Option<Value> {
+    let entry: Value = serde_json::from_str(line).ok()?;
+
+    // Only include user and assistant messages
+    let msg_type = entry.get("type")?.as_str()?;
+    if msg_type != "user" && msg_type != "assistant" {
+        return None;
+    }
+
+    // Extract message object
+    let message = entry.get("message")?;
+    let mut enriched = message.clone();
+
+    // Preserve isSidechain flag from entry
+    if let Some(is_sidechain) = entry.get("isSidechain") {
+        if let Some(obj) = enriched.as_object_mut() {
+            obj.insert("isSidechain".to_string(), is_sidechain.clone());
+        }
+    }
+
+    Some(enriched)
+}
+
+/**
+ * Find Claude's JSONL file for a session
+ * Searches in ~/.claude/projects/ directories
+ */
+fn find_claude_session_file(repo_path: &str, lychee_id: &str, claude_session_id: &str) -> Option<PathBuf> {
+    let home_dir = std::env::var("HOME").ok()?;
+    let projects_dir = PathBuf::from(&home_dir).join(".claude").join("projects");
+    let session_filename = format!("{}.jsonl", claude_session_id);
+
+    // Search in project directories
+    if let Ok(entries) = std::fs::read_dir(&projects_dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let dir_path = entry.path();
+            if !dir_path.is_dir() {
+                continue;
+            }
+
+            let possible_file = dir_path.join(&session_filename);
+            if possible_file.exists() {
+                // Check if this directory is for our lychee session
+                let dir_name = dir_path.file_name()?.to_str()?;
+                if dir_name.contains(lychee_id) {
+                    return Some(possible_file);
+                }
+            }
+        }
+    }
+
+    // Try expected path as fallback
+    let session_dir_path = PathBuf::from(repo_path).join(".lychee").join(lychee_id);
+    let path_str = session_dir_path.display().to_string();
+    let sanitized = path_str
+        .trim_start_matches('/')
+        .replace("/.", "/-.")
+        .replace('/', "-");
+    let sanitized_path = format!("-{}", sanitized);
+
+    let expected_file = projects_dir.join(&sanitized_path).join(&session_filename);
+    if expected_file.exists() {
+        return Some(expected_file);
+    }
+
+    None
 }
 
 async fn render_tui(state: &Arc<AppState>) {

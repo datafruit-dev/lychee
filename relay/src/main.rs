@@ -38,7 +38,8 @@ enum Message {
     #[serde(rename = "sessions_list")]
     SessionsList {
         repo_path: String,
-        sessions: Vec<SessionInfo>
+        sessions: Vec<SessionInfo>,
+        active_session_ids: Option<Vec<String>>
     },
     #[serde(rename = "client_count")]
     ClientCount {
@@ -54,6 +55,22 @@ enum Message {
         repo_path: String,
         lychee_id: String,
         messages: serde_json::Value
+    },
+    #[serde(rename = "session_update")]
+    SessionUpdate {
+        repo_path: String,
+        lychee_id: String,
+        new_entries: serde_json::Value
+    },
+    #[serde(rename = "stream_start")]
+    StreamStart {
+        repo_path: String,
+        lychee_id: String
+    },
+    #[serde(rename = "stream_end")]
+    StreamEnd {
+        repo_path: String,
+        lychee_id: String
     },
     #[serde(rename = "claude_stream")]
     ClaudeStream {
@@ -197,6 +214,9 @@ async fn handle_client(
                     Message::SessionsList { repo_path: rp, .. } |
                     Message::SessionCreated { repo_path: rp, .. } |
                     Message::SessionHistory { repo_path: rp, .. } |
+                    Message::SessionUpdate { repo_path: rp, .. } |
+                    Message::StreamStart { repo_path: rp, .. } |
+                    Message::StreamEnd { repo_path: rp, .. } |
                     Message::ClaudeStream { repo_path: rp, .. } => {
                         *rp = repo_path_clone.clone();
                     }

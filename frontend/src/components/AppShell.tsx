@@ -51,10 +51,6 @@ export default function AppShell({ children }: AppShellProps) {
   } | null>(null);
 
   const activeRepo = sessions.repos.find((repo) => repo.path === sessions.activeRepoPath) || null;
-  const isStreaming = sessions.currentSessionId
-    ? sessions.activeStreams.has(sessions.currentSessionId)
-    : false;
-
 
   useEffect(() => {
     try {
@@ -100,7 +96,6 @@ export default function AppShell({ children }: AppShellProps) {
           onToggleSidebar={toggleSidebar}
           activeRepo={activeRepo}
           currentSessionId={sessions.currentSessionId}
-          isStreaming={isStreaming}
           isRightSidebarOpen={isRightSidebarOpen}
           onToggleRightSidebar={toggleRightSidebar}
           rightSidebarWidth={rightSidebarWidth}
@@ -120,7 +115,6 @@ export default function AppShell({ children }: AppShellProps) {
             isCreatingSession={sessions.isCreatingSession}
             isCollapsed={isCollapsed}
             onToggleSidebar={toggleSidebar}
-            isStreaming={isStreaming}
           />
 
           <div className="flex-1 min-w-0 flex flex-col overflow-hidden">

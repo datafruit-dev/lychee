@@ -14,7 +14,6 @@ interface SidebarProps {
   onToggleSidebar: () => void;
   creatingSessionForRepo: string | null;
   isCreatingSession: boolean;
-  isStreaming: boolean;
 }
 
 function formatRelativeTime(dateString: string): string {
@@ -44,7 +43,6 @@ export default function Sidebar({
   onToggleSidebar,
   creatingSessionForRepo,
   isCreatingSession,
-  isStreaming,
 }: SidebarProps) {
   const [expandedRepos, setExpandedRepos] = useState<Set<string>>(
     new Set()
@@ -145,7 +143,8 @@ export default function Sidebar({
                       ) : (
                         repo.sessions.map((session) => {
                           const isActiveSession = session.lychee_id === currentSessionId && repo.path === activeRepoPath;
-                          const isSessionStreaming = isActiveSession && isStreaming;
+                          // Check the session's own isStreaming flag, not the global one
+                          const isSessionStreaming = session.isStreaming || false;
 
                           return (
                             <button

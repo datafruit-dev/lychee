@@ -21,241 +21,189 @@ interface ProcessedMessage {
   originalMessage?: ChatMessage;
 }
 
-function extractMessageContent(content: string | unknown[]): string {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .filter((block) => block && typeof block === "object" && (block as {type?: string}).type === "text")
-      .map((block) => (block as {text?: string}).text || "")
-      .join("");
-  }
-  return "";
+// ============================================================================
+// HELPER FUNCTIONS - Extract data from Claude Code message structures
+// ============================================================================
+
+/**
+ * Extract text from message content (handles both string and block array formats)
+ */
+function getTextFromContent(content: string | unknown[]): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .filter((b) => b && typeof b === "object" && (b as { type?: string }).type === "text")
+    .map((b) => (b as { text?: string }).text || "")
+    .join("");
 }
 
-function extractToolCalls(content: unknown): ClaudeToolUse[] {
-  if (!Array.isArray(content)) {
-    return [];
-  }
-  return content.filter((block) => block && (block as {type?: string}).type === "tool_use") as ClaudeToolUse[];
+/**
+ * Extract tool_use blocks from message content
+ */
+function getToolsFromContent(content: unknown): ClaudeToolUse[] {
+  if (!Array.isArray(content)) return [];
+  return content.filter((b) => b && (b as { type?: string }).type === "tool_use") as ClaudeToolUse[];
 }
 
+/**
+ * Check if a user message is actually a tool result (system-generated, should be hidden)
+ * Tool results have role="user" but contain only tool_result blocks, not actual user text
+ */
 function isToolResultMessage(msg: ChatMessage): boolean {
-  if (msg.role !== "user") return false;
+  if (msg.role !== "user" || !Array.isArray(msg.content)) return false;
 
-  if (Array.isArray(msg.content)) {
-    // Check if all content blocks are tool_result
-    const hasOnlyToolResults = msg.content.length > 0 &&
-      msg.content.every((block: unknown) => block && typeof block === "object" && (block as {type?: string}).type === "tool_result");
-    return hasOnlyToolResults;
-  }
-
-  return false;
+  return msg.content.length > 0 &&
+    msg.content.every((b: unknown) =>
+      b && typeof b === "object" && (b as { type?: string }).type === "tool_result"
+    );
 }
 
-function processMessages(messages: ChatMessage[]): ProcessedMessage[] {
-  const processed: ProcessedMessage[] = [];
+// ============================================================================
+// EXCHANGE PROCESSING - Process assistant message exchanges
+// ============================================================================
 
-  // Filter out sidechain messages and tool result messages
-  const mainMessages = messages.filter(msg =>
-    !msg.isSidechain && !isToolResultMessage(msg)
-  );
+/**
+ * Process an assistant exchange (one or more consecutive assistant messages)
+ * With file-based updates, all messages come from disk in the same format:
+ * - Each JSONL entry becomes one message
+ * - Tool calls create separate message entries
+ * - We group them and extract the worklog
+ */
+function processExchange(msgs: ChatMessage[], exchangeId: string): ProcessedMessage[] {
+  const result: ProcessedMessage[] = [];
+  const worklog: WorklogItem[] = [];
 
-  let i = 0;
-  let exchangeCounter = 0;
+  const firstText = getTextFromContent(msgs[0].content);
+  const lastText = msgs.length > 1 ? getTextFromContent(msgs[msgs.length - 1].content) : "";
 
-  while (i < mainMessages.length) {
-    const msg = mainMessages[i];
+  // Show initial text from first message
+  if (firstText.trim()) {
+    result.push({
+      id: `${exchangeId}-initial`,
+      type: 'assistant-text',
+      content: firstText,
+      originalMessage: msgs[0]
+    });
+  }
 
-    if (msg.role === "user") {
-      processed.push({
-        id: `user-${i}`,
-        type: 'user',
-        content: extractMessageContent(msg.content),
-        originalMessage: msg
+  // Collect all tools with their preceding context
+  let context = firstText || null;
+
+  for (let j = 0; j < msgs.length; j++) {
+    const msgText = getTextFromContent(msgs[j].content);
+    const msgTools = getToolsFromContent(msgs[j].content);
+
+    // Update context when we hit intermediate text messages
+    if (j > 0 && msgText.trim()) {
+      context = msgText;
+    }
+
+    // Skip tools from first message if it had display text (already shown above)
+    const skipFirstMessageTools = j === 0 && firstText.trim();
+    if (!skipFirstMessageTools) {
+      msgTools.forEach(tool => {
+        worklog.push({
+          tool,
+          precedingContext: context,
+          originalMessage: msgs[j]
+        });
       });
-      i++;
-    } else if (msg.role === "assistant") {
-      // Collect all consecutive assistant messages (one exchange)
-      const exchangeMessages: ChatMessage[] = [];
-      const exchangeStartIdx = i;
-      while (i < mainMessages.length && mainMessages[i].role === "assistant") {
-        exchangeMessages.push(mainMessages[i]);
-        i++;
-      }
-
-      console.log(`[Exchange] Found ${exchangeMessages.length} assistant messages in exchange`);
-
-      // Process this exchange - use stable IDs based on exchange number
-      const exchangeId = `exchange-${exchangeCounter++}`;
-      const worklogItems: WorklogItem[] = [];
-
-      // Special case: Single message with multiple content blocks (STREAMING)
-      if (exchangeMessages.length === 1) {
-        const singleMsg = exchangeMessages[0];
-        const content = singleMsg.content;
-
-        if (Array.isArray(content)) {
-          const hasTools = content.some((b: unknown) => (b as {type?: string}).type === "tool_use");
-
-          if (!hasTools) {
-            // No tools - just show all text
-            const allText = content
-              .filter((b: unknown) => (b as {type?: string}).type === "text")
-              .map((b: unknown) => (b as {text?: string}).text || "")
-              .join("");
-
-            if (allText.trim()) {
-              processed.push({
-                id: `${exchangeId}-text`,
-                type: 'assistant-text',
-                content: allText,
-                originalMessage: singleMsg
-              });
-            }
-          } else {
-            // Has tools - split text using snapshot
-            const allText = content
-              .filter((b: unknown) => (b as {type?: string}).type === "text")
-              .map((b: unknown) => (b as {text?: string}).text || "")
-              .join("");
-
-            const toolBlocks = content.filter((b: unknown) => (b as {type?: string}).type === "tool_use") as ClaudeToolUse[];
-
-            // Use snapshot to split text
-            const splitPoint = singleMsg.textLengthAtTools || 0;
-            const textBeforeTools = splitPoint > 0 ? allText.slice(0, splitPoint) : allText;
-            const textAfterTools = splitPoint > 0 ? allText.slice(splitPoint) : "";
-
-            // Show initial text
-            if (textBeforeTools.trim()) {
-              processed.push({
-                id: `${exchangeId}-initial`,
-                type: 'assistant-text',
-                content: textBeforeTools,
-                originalMessage: singleMsg
-              });
-            }
-
-            // Show worklog
-            if (toolBlocks.length > 0) {
-              processed.push({
-                id: `${exchangeId}-worklog`,
-                type: 'worklog',
-                content: '',
-                worklogItems: toolBlocks.map(tool => ({
-                  tool,
-                  precedingContext: textBeforeTools || null,
-                  originalMessage: singleMsg
-                }))
-              });
-            }
-
-            // Show final text (text that comes after tools)
-            if (textAfterTools.trim()) {
-              processed.push({
-                id: `${exchangeId}-final`,
-                type: 'assistant-text',
-                content: textAfterTools,
-                originalMessage: singleMsg
-              });
-            }
-          }
-        } else {
-          // Plain string content (no tools)
-          const text = extractMessageContent(singleMsg.content);
-          if (text.trim()) {
-            processed.push({
-              id: `${exchangeId}-text`,
-              type: 'assistant-text',
-              content: text,
-              originalMessage: singleMsg
-            });
-          }
-        }
-      } else {
-        // Multiple messages (LOADED FROM DISK)
-        const firstMsg = exchangeMessages[0];
-        const lastMsg = exchangeMessages[exchangeMessages.length - 1];
-
-        const firstText = extractMessageContent(firstMsg.content);
-        const lastText = extractMessageContent(lastMsg.content);
-
-        // Show first text if present
-        if (firstText.trim()) {
-          processed.push({
-            id: `${exchangeId}-initial`,
-            type: 'assistant-text',
-            content: firstText,
-            originalMessage: firstMsg
-          });
-        }
-
-        // Build worklog from all messages
-        let currentContext: string | null = firstText || null;
-
-        for (let j = 0; j < exchangeMessages.length; j++) {
-          const exMsg = exchangeMessages[j];
-          const msgText = extractMessageContent(exMsg.content);
-          const tools = extractToolCalls(exMsg.content);
-
-          // Update context from any message with text
-          if (j > 0 && msgText.trim()) {
-            currentContext = msgText;
-          }
-
-          // Add tools from all but first message (if first had text)
-          if (j > 0 || !firstText.trim()) {
-            tools.forEach(tool => {
-              worklogItems.push({
-                tool,
-                precedingContext: currentContext,
-                originalMessage: exMsg
-              });
-            });
-          }
-        }
-
-        // Show final text if different from first
-        const finalText = lastText.trim() && exchangeMessages.length > 1 && lastText !== firstText ? lastText : null;
-
-        // Add worklog first
-        if (worklogItems.length > 0) {
-          processed.push({
-            id: `${exchangeId}-worklog`,
-            type: 'worklog',
-            content: '',
-            worklogItems
-          });
-        }
-
-        // Then add final text
-        if (finalText) {
-          processed.push({
-            id: `${exchangeId}-final`,
-            type: 'assistant-text',
-            content: finalText,
-            originalMessage: lastMsg
-          });
-        }
-      }
-
-      // Note: Worklog for single message case is already handled above in the streaming branch
-    } else if (msg.role === "system") {
-      processed.push({
-        id: `system-${i}`,
-        type: 'system',
-        content: extractMessageContent(msg.content),
-        originalMessage: msg
-      });
-      i++;
-    } else {
-      i++;
     }
   }
 
-  return processed;
+  // Add worklog
+  if (worklog.length > 0) {
+    result.push({
+      id: `${exchangeId}-worklog`,
+      type: 'worklog',
+      content: '',
+      worklogItems: worklog
+    });
+  }
+
+  // Add final text if different from initial
+  if (lastText.trim() && lastText !== firstText) {
+    result.push({
+      id: `${exchangeId}-final`,
+      type: 'assistant-text',
+      content: lastText,
+      originalMessage: msgs[msgs.length - 1]
+    });
+  }
+
+  return result;
+}
+
+// ============================================================================
+// MAIN PROCESSING - Convert Claude Code messages to UI display format
+// ============================================================================
+
+/**
+ * Transform raw Claude Code messages into UI-ready format
+ *
+ * Filters out:
+ * - Sidechain messages (warmup, subagents)
+ * - Tool result messages (system-generated user messages)
+ *
+ * Groups into exchanges:
+ * - Each user message starts a new exchange
+ * - Consecutive assistant messages form one exchange
+ * - Each exchange shows: initial text → worklog → final text
+ */
+function processMessages(messages: ChatMessage[]): ProcessedMessage[] {
+  const result: ProcessedMessage[] = [];
+
+  // Filter out noise: warmup sidechains and tool results
+  const cleanMessages = messages.filter(m => !m.isSidechain && !isToolResultMessage(m));
+
+  let i = 0;
+  let exchangeNum = 0;
+
+  while (i < cleanMessages.length) {
+    const msg = cleanMessages[i];
+
+    // User message - straightforward
+    if (msg.role === "user") {
+      result.push({
+        id: `user-${i}`,
+        type: 'user',
+        content: getTextFromContent(msg.content),
+        originalMessage: msg
+      });
+      i++;
+      continue;
+    }
+
+    // System message - straightforward
+    if (msg.role === "system") {
+      result.push({
+        id: `system-${i}`,
+        type: 'system',
+        content: getTextFromContent(msg.content),
+        originalMessage: msg
+      });
+      i++;
+      continue;
+    }
+
+    // Assistant exchange - collect consecutive assistant messages
+    if (msg.role === "assistant") {
+      const exchangeId = `exchange-${exchangeNum++}`;
+      const assistantMessages: ChatMessage[] = [];
+
+      while (i < cleanMessages.length && cleanMessages[i].role === "assistant") {
+        assistantMessages.push(cleanMessages[i]);
+        i++;
+      }
+
+      // Process exchange (all messages from disk now - same format)
+      const exchangeMessages = processExchange(assistantMessages, exchangeId);
+      result.push(...exchangeMessages);
+    }
+  }
+
+  return result;
 }
 
 export default function Home() {
@@ -340,9 +288,14 @@ export default function Home() {
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-6 py-8 pb-40">
           {processedMessages.length === 0 ? (
             <div className="mt-24 text-center text-muted-foreground">
-              {!activeRepo && sessions.repos.length === 0 && (
+              {isStreaming ? (
+                <div className="thinking-indicator flex items-center justify-center gap-2">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-primary/70" />
+                  <span className="animate-pulse">Claude is thinking...</span>
+                </div>
+              ) : !activeRepo && sessions.repos.length === 0 ? (
                 <p className="text-sm">Run `lychee up` in a repository to connect.</p>
-              )}
+              ) : null}
             </div>
           ) : (
             <div className="flex flex-col gap-4">
@@ -407,6 +360,16 @@ export default function Home() {
 
                 return null;
               })}
+
+              {/* Show thinking indicator at the end if streaming but no assistant response yet */}
+              {isStreaming && processedMessages.length > 0 && (
+                <div className="flex justify-start">
+                  <div className="thinking-indicator flex items-center gap-2 text-muted-foreground">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-primary/70" />
+                    <span className="animate-pulse">Claude is thinking...</span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

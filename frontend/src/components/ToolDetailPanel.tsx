@@ -10,12 +10,32 @@ interface ToolDetailPanelProps {
   onClose: () => void;
 }
 
+/**
+ * Extract text from ChatMessage (handles both string and block array formats)
+ */
+function getContextText(msg: ChatMessage): string {
+  if (typeof msg.content === "string") return msg.content;
+  if (!Array.isArray(msg.content)) return "";
+
+  return msg.content
+    .filter((b: unknown) => (b as { type?: string }).type === "text")
+    .map((b: unknown) => (b as { text?: string }).text || "")
+    .join("");
+}
+
+/**
+ * Display detailed information about a tool call
+ * Shows context message, tool inputs, and tool-specific formatting
+ */
 export default function ToolDetailPanel({
   toolCall,
   contextMessage,
   precedingContext,
   onClose
 }: ToolDetailPanelProps) {
+  // Determine which context to show (precedingContext from worklog takes priority)
+  const contextText = precedingContext || (contextMessage ? getContextText(contextMessage) : null);
+
   return (
     <div className="h-full flex flex-col bg-background">
       {/* Header */}
@@ -34,33 +54,14 @@ export default function ToolDetailPanel({
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {/* Preceding Context (from worklog) */}
-        {precedingContext && (
+        {/* Context - what Claude said before executing this tool */}
+        {contextText && (
           <div className="space-y-2">
             <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               Context
             </h4>
             <div className="bg-muted/50 rounded-lg p-3">
-              <p className="text-sm whitespace-pre-wrap">{precedingContext}</p>
-            </div>
-          </div>
-        )}
-
-        {/* Context Message (legacy - for non-worklog tools) */}
-        {!precedingContext && contextMessage && (
-          <div className="space-y-2">
-            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              Context
-            </h4>
-            <div className="bg-muted/50 rounded-lg p-3">
-              <p className="text-sm">
-                {typeof contextMessage.content === "string"
-                  ? contextMessage.content
-                  : contextMessage.content
-                      ?.filter((block: unknown) => (block as {type?: string}).type === "text")
-                      .map((block: unknown) => (block as {text?: string}).text)
-                      .join("")}
-              </p>
+              <p className="text-sm whitespace-pre-wrap">{contextText}</p>
             </div>
           </div>
         )}
